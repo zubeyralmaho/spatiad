@@ -16,5 +16,6 @@ sha2.workspace = true
 spatiad-dispatch = { path = "../spatiad-dispatch" }
 spatiad-types = { path = "../spatiad-types" }
 spatiad-ws = { path = "../spatiad-ws" }
+spatiad-core = { path = "../spatiad-core" }
 tokio.workspace = true
 uuid.workspace = true

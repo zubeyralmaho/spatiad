@@ -93,3 +93,26 @@ Request:
 ```
 
 Response: 200 OK
+
+## GET /api/v1/dispatch/job/{job_id}
+
+Returns current dispatch state for the given job.
+
+Response:
+
+```json
+{
+  "job_id": "uuid",
+  "state": "searching",
+  "matched_driver_id": null,
+  "matched_offer_id": null
+}
+```
+
+Possible `state` values:
+
+- `unknown`
+- `pending`
+- `searching`
+- `matched`
+- `exhausted`

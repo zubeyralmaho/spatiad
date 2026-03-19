@@ -33,6 +33,18 @@ pub struct CancelledDriverOffer {
     pub offer_id: Uuid,
 }
 
+#[derive(Debug, Clone)]
+pub enum JobDispatchState {
+    UnknownJob,
+    Pending,
+    Searching,
+    Matched {
+        driver_id: Uuid,
+        offer_id: Uuid,
+    },
+    Exhausted,
+}
+
 #[derive(Debug)]
 pub struct Engine {
     spatial: SpatialIndex,
@@ -168,6 +180,35 @@ impl Engine {
                 offer_id: offer.offer_id,
             })
             .collect()
+    }
+
+    pub fn job_dispatch_state(&self, job_id: Uuid) -> JobDispatchState {
+        if !self.jobs.contains_key(&job_id) {
+            return JobDispatchState::UnknownJob;
+        }
+
+        let offers: Vec<&OfferRecord> = self
+            .offers
+            .values()
+            .filter(|offer| offer.job_id == job_id)
+            .collect();
+
+        if offers.is_empty() {
+            return JobDispatchState::Pending;
+        }
+
+        if let Some(accepted) = offers.iter().find(|offer| offer.status == OfferStatus::Accepted) {
+            return JobDispatchState::Matched {
+                driver_id: accepted.driver_id,
+                offer_id: accepted.offer_id,
+            };
+        }
+
+        if offers.iter().any(|offer| offer.status == OfferStatus::Pending) {
+            return JobDispatchState::Searching;
+        }
+
+        JobDispatchState::Exhausted
     }
 
     pub fn handle_offer_response(
@@ -322,6 +363,50 @@ mod tests {
 
         assert_eq!(accepted_status, OfferStatus::Accepted);
         assert_eq!(cancelled_status, OfferStatus::Cancelled);
+    }
+
+    #[test]
+    fn job_dispatch_state_transitions_to_matched_after_accept() {
+        let mut engine = Engine::new(8);
+        let driver_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let offer = engine.create_offer(job_id, driver_id, 30);
+        assert!(matches!(engine.job_dispatch_state(job_id), JobDispatchState::Searching));
+
+        engine
+            .handle_offer_response(offer.offer_id, true)
+            .expect("response should be accepted")
+            .expect("match result should exist");
+
+        assert!(matches!(
+            engine.job_dispatch_state(job_id),
+            JobDispatchState::Matched { .. }
+        ));
     }
 }
 

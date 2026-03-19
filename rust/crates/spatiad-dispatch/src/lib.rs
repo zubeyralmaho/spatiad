@@ -1,5 +1,6 @@
 use spatiad_core::Engine;
 use spatiad_core::CancelledDriverOffer;
+use spatiad_core::JobDispatchState;
 use spatiad_core::PendingDriverOffer;
 use spatiad_types::{JobRequest, MatchResult, OfferRecord};
 use thiserror::Error;
@@ -65,6 +66,10 @@ impl DispatchService {
 
     pub fn cancelled_offers_for_job(&self, job_id: Uuid) -> Vec<CancelledDriverOffer> {
         self.engine.cancelled_offers_for_job(job_id)
+    }
+
+    pub fn job_dispatch_state(&self, job_id: Uuid) -> JobDispatchState {
+        self.engine.job_dispatch_state(job_id)
     }
 
     pub fn handle_offer_response(

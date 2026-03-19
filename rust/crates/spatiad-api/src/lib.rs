@@ -13,6 +13,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use spatiad_core::JobDispatchState;
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult};
 use spatiad_ws::{DriverInbound, DriverOutbound};
@@ -56,6 +57,14 @@ pub struct OfferCancelRequest {
     pub offer_id: Uuid,
 }
 
+#[derive(Debug, Serialize)]
+pub struct JobStatusResponse {
+    pub job_id: Uuid,
+    pub state: &'static str,
+    pub matched_driver_id: Option<Uuid>,
+    pub matched_offer_id: Option<Uuid>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DriverUpsertRequest {
     pub driver_id: Uuid,
@@ -70,6 +79,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/driver/upsert", post(upsert_driver))
         .route("/api/v1/dispatch/offer", post(dispatch_offer))
         .route("/api/v1/dispatch/cancel", post(cancel_offer))
+        .route("/api/v1/dispatch/job/:job_id", get(dispatch_job_status))
         .route("/api/v1/stream/driver/:driver_id", get(driver_ws))
         .with_state(state)
 }
@@ -125,6 +135,52 @@ async fn cancel_offer(
     let mut dispatch = state.dispatch.lock().await;
     dispatch.cancel_offer(payload.offer_id);
     axum::http::StatusCode::OK
+}
+
+async fn dispatch_job_status(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let dispatch = state.dispatch.lock().await;
+    let job_state = dispatch.job_dispatch_state(job_id);
+
+    let response = match job_state {
+        JobDispatchState::UnknownJob => JobStatusResponse {
+            job_id,
+            state: "unknown",
+            matched_driver_id: None,
+            matched_offer_id: None,
+        },
+        JobDispatchState::Pending => JobStatusResponse {
+            job_id,
+            state: "pending",
+            matched_driver_id: None,
+            matched_offer_id: None,
+        },
+        JobDispatchState::Searching => JobStatusResponse {
+            job_id,
+            state: "searching",
+            matched_driver_id: None,
+            matched_offer_id: None,
+        },
+        JobDispatchState::Matched {
+            driver_id,
+            offer_id,
+        } => JobStatusResponse {
+            job_id,
+            state: "matched",
+            matched_driver_id: Some(driver_id),
+            matched_offer_id: Some(offer_id),
+        },
+        JobDispatchState::Exhausted => JobStatusResponse {
+            job_id,
+            state: "exhausted",
+            matched_driver_id: None,
+            matched_offer_id: None,
+        },
+    };
+
+    Json(response)
 }
 
 async fn driver_ws(
