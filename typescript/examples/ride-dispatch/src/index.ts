@@ -37,6 +37,14 @@ const run = async () => {
   });
 
   console.log("offer response", response);
+
+  const events = await client.getJobEvents({
+    jobId: "33333333-3333-3333-3333-333333333333",
+    limit: 20,
+    kinds: ["offer_created", "match_confirmed"]
+  });
+
+  console.log("filtered events", events);
 };
 
 run().catch((error) => {
