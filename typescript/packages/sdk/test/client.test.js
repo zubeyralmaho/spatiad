@@ -99,6 +99,42 @@ test("getJobEvents rejects before and cursor together", async () => {
   );
 });
 
+test("getJobEventsAllPages falls back to next_before_cursor", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+
+    if (calls.length === 1) {
+      return makeJsonResponse(200, {
+        job_id: "job-fallback",
+        events: [{ at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" }],
+        next_cursor: null,
+        next_before_cursor: "2026-03-20T09:59:59Z"
+      });
+    }
+
+    return makeJsonResponse(200, {
+      job_id: "job-fallback",
+      events: [{ at: "2026-03-20T09:59:00Z", kind: "offer_rejected", offer_id: "o1", driver_id: "d1", status: "rejected" }],
+      next_cursor: null,
+      next_before_cursor: null
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    const events = await client.getJobEventsAllPages({ jobId: "job-fallback", limit: 1 });
+
+    assert.equal(calls.length, 2);
+    assert.match(calls[1], /cursor=2026-03-20T09%3A59%3A59Z/);
+    assert.equal(events.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("createOffer retries on configured status", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
