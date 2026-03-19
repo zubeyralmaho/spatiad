@@ -58,6 +58,21 @@ Behavior notes:
 - If no candidate is found, search radius expands in +2 km steps until `max_radius_km`.
 - Engine selects the nearest available driver in the current search radius.
 
+Webhook notes:
+
+- If `SPATIAD_WEBHOOK_URL` is set, an outbound callback is sent after a successful driver acceptance.
+- Callback payload:
+
+```json
+{
+  "event": "trip_matched",
+  "job_id": "uuid",
+  "driver_id": "uuid",
+  "offer_id": "uuid",
+  "matched_at": "2026-03-20T10:00:00Z"
+}
+```
+
 Fallback response (404 in current scaffold):
 
 ```json

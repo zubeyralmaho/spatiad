@@ -8,6 +8,10 @@
 - SPATIAD_WEBHOOK_URL: optional in scaffold
 - SPATIAD_WEBHOOK_SECRET: optional in scaffold
 
+## Current implemented config
+
+- `SPATIAD_WEBHOOK_URL`: when set, spatiad sends `trip_matched` callbacks after offer acceptance.
+
 ## Current scaffold behavior
 
 - Bind address is hardcoded to 0.0.0.0:3000

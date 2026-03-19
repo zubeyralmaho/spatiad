@@ -58,6 +58,10 @@ impl DispatchService {
         self.engine.pending_offers_for_driver(driver_id)
     }
 
+    pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<Uuid> {
+        self.engine.expire_pending_offers_for_driver(driver_id)
+    }
+
     pub fn handle_offer_response(
         &mut self,
         offer_id: Uuid,

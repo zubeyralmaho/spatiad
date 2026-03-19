@@ -11,7 +11,7 @@ use axum::extract::ws::WebSocket;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use spatiad_dispatch::DispatchService;
-use spatiad_types::{Coordinates, DriverStatus, JobRequest};
+use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult};
 use spatiad_ws::{DriverInbound, DriverOutbound};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -19,6 +19,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct ApiState {
     pub dispatch: Arc<Mutex<DispatchService>>,
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -158,6 +159,8 @@ async fn replay_pending_offers(
     driver_id: Uuid,
     socket: &mut WebSocket,
 ) -> Result<(), ()> {
+    flush_expired_offers(state, driver_id, socket).await?;
+
     let pending = {
         let dispatch = state.dispatch.lock().await;
         dispatch.pending_offers_for_driver(driver_id)
@@ -172,6 +175,25 @@ async fn replay_pending_offers(
             expires_at: offer.expires_at,
         };
 
+        let text = serde_json::to_string(&payload).map_err(|_| ())?;
+        socket.send(Message::Text(text)).await.map_err(|_| ())?;
+    }
+
+    Ok(())
+}
+
+async fn flush_expired_offers(
+    state: &ApiState,
+    driver_id: Uuid,
+    socket: &mut WebSocket,
+) -> Result<(), ()> {
+    let expired_offer_ids = {
+        let mut dispatch = state.dispatch.lock().await;
+        dispatch.expire_pending_offers_for_driver(driver_id)
+    };
+
+    for offer_id in expired_offer_ids {
+        let payload = DriverOutbound::OfferExpired { offer_id };
         let text = serde_json::to_string(&payload).map_err(|_| ())?;
         socket.send(Message::Text(text)).await.map_err(|_| ())?;
     }
@@ -204,6 +226,8 @@ async fn handle_driver_message(
                     Ok(())
                 }
                 DriverInbound::OfferResponse { offer_id, accepted } => {
+                    flush_expired_offers(state, driver_id, socket).await?;
+
                     let match_result = {
                         let mut dispatch = state.dispatch.lock().await;
                         dispatch
@@ -218,6 +242,10 @@ async fn handle_driver_message(
                         };
                         let text = serde_json::to_string(&outbound).map_err(|_| ())?;
                         socket.send(Message::Text(text)).await.map_err(|_| ())?;
+
+                        if let Some(webhook_url) = &state.webhook_url {
+                            let _ = send_match_webhook(webhook_url, &result).await;
+                        }
                     }
 
                     Ok(())
@@ -229,5 +257,37 @@ async fn handle_driver_message(
             socket.send(Message::Pong(payload)).await.map_err(|_| ())
         }
         Message::Binary(_) | Message::Pong(_) => Ok(()),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct MatchWebhookPayload {
+    event: &'static str,
+    job_id: Uuid,
+    driver_id: Uuid,
+    offer_id: Uuid,
+    matched_at: chrono::DateTime<Utc>,
+}
+
+async fn send_match_webhook(webhook_url: &str, result: &MatchResult) -> Result<(), ()> {
+    let payload = MatchWebhookPayload {
+        event: "trip_matched",
+        job_id: result.job_id,
+        driver_id: result.driver_id,
+        offer_id: result.offer_id,
+        matched_at: result.matched_at,
+    };
+
+    let response = reqwest::Client::new()
+        .post(webhook_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|_| ())?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(())
     }
 }

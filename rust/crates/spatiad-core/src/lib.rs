@@ -16,6 +16,8 @@ pub enum CoreError {
     JobNotFound,
     #[error("offer is not pending")]
     OfferNotPending,
+    #[error("offer is expired")]
+    OfferExpired,
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +121,11 @@ impl Engine {
     pub fn pending_offers_for_driver(&self, driver_id: Uuid) -> Vec<PendingDriverOffer> {
         self.offers
             .values()
-            .filter(|offer| offer.driver_id == driver_id && offer.status == OfferStatus::Pending)
+            .filter(|offer| {
+                offer.driver_id == driver_id
+                    && offer.status == OfferStatus::Pending
+                    && offer.expires_at > Utc::now()
+            })
             .filter_map(|offer| {
                 self.jobs.get(&offer.job_id).map(|job| PendingDriverOffer {
                     offer_id: offer.offer_id,
@@ -132,6 +138,23 @@ impl Engine {
             .collect()
     }
 
+    pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<Uuid> {
+        let now = Utc::now();
+        let mut expired = Vec::new();
+
+        for offer in self.offers.values_mut() {
+            if offer.driver_id == driver_id
+                && offer.status == OfferStatus::Pending
+                && offer.expires_at <= now
+            {
+                offer.status = OfferStatus::Expired;
+                expired.push(offer.offer_id);
+            }
+        }
+
+        expired
+    }
+
     pub fn handle_offer_response(
         &mut self,
         offer_id: Uuid,
@@ -140,6 +163,10 @@ impl Engine {
         let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
         if offer.status != OfferStatus::Pending {
             return Err(CoreError::OfferNotPending);
+        }
+        if offer.expires_at <= Utc::now() {
+            offer.status = OfferStatus::Expired;
+            return Err(CoreError::OfferExpired);
         }
 
         if accepted {
@@ -159,6 +186,54 @@ impl Engine {
 
         offer.status = OfferStatus::Rejected;
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, Utc};
+    use spatiad_types::{Coordinates, DriverStatus};
+
+    use super::*;
+
+    #[test]
+    fn pending_offer_can_expire_for_driver() {
+        let mut engine = Engine::new(8);
+        let driver_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let offer = engine.create_offer(job_id, driver_id, 1);
+        if let Some(stored) = engine.offers.get_mut(&offer.offer_id) {
+            stored.expires_at = Utc::now() - Duration::seconds(1);
+        }
+
+        let expired = engine.expire_pending_offers_for_driver(driver_id);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0], offer.offer_id);
     }
 }
 
