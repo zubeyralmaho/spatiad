@@ -148,7 +148,8 @@ test("getJobEvents exposes API error details as SpatiadApiError", async () => {
   globalThis.fetch = async () =>
     makeJsonResponse(400, {
       error: "invalid_query",
-      message: "invalid 'before' cursor; expected RFC3339 timestamp"
+      message: "invalid 'before' cursor; expected RFC3339 timestamp",
+      hint: "use RFC3339"
     });
 
   try {
@@ -161,6 +162,8 @@ test("getJobEvents exposes API error details as SpatiadApiError", async () => {
         assert.equal(error.code, "invalid_query");
         assert.equal(error.retryable, false);
         assert.match(error.message, /invalid 'before' cursor/);
+        assert.equal(error.details?.error, "invalid_query");
+        assert.equal(error.details?.hint, "use RFC3339");
         return true;
       }
     );

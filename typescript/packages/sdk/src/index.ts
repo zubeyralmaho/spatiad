@@ -13,6 +13,7 @@ export type RetryOptions = {
 export type ApiErrorBody = {
   error?: string;
   message?: string;
+  [key: string]: unknown;
 };
 
 export type DispatchOfferRequest = {
@@ -70,13 +71,15 @@ export class SpatiadApiError extends Error {
   public readonly status: number;
   public readonly code?: string;
   public readonly retryable: boolean;
+  public readonly details?: ApiErrorBody;
 
-  constructor(message: string, status: number, code?: string, retryable?: boolean) {
+  constructor(message: string, status: number, code?: string, retryable?: boolean, details?: ApiErrorBody) {
     super(message);
     this.name = "SpatiadApiError";
     this.status = status;
     this.code = code;
     this.retryable = retryable ?? isRetryableStatus(status);
+    this.details = details;
   }
 }
 
@@ -214,18 +217,23 @@ export class SpatiadClient {
   private async createApiError(prefix: string, response: Response): Promise<SpatiadApiError> {
     let body: ApiErrorBody | undefined;
     try {
-      body = await response.json() as ApiErrorBody;
+      const parsed = await response.json() as unknown;
+      body = isApiErrorBody(parsed) ? parsed : undefined;
     } catch {
       body = undefined;
     }
 
     const details = body?.message ?? `${prefix} with status ${response.status}`;
-    return new SpatiadApiError(details, response.status, body?.error);
+    return new SpatiadApiError(details, response.status, body?.error, undefined, body);
   }
 }
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function isApiErrorBody(value: unknown): value is ApiErrorBody {
+  return typeof value === "object" && value !== null;
 }
 
 function waitWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
