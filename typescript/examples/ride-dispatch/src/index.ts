@@ -9,6 +9,9 @@ import {
 const client = new SpatiadClient("http://localhost:3000");
 
 const run = async () => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 5_000);
+
   const app = express();
   const webhookSecret = process.env.SPATIAD_WEBHOOK_SECRET ?? "dev-secret";
 
@@ -52,6 +55,7 @@ const run = async () => {
     maxPages: 5,
     maxEvents: 100,
     kinds: ["offer_created", "match_confirmed"],
+    signal: controller.signal,
     onPage: (page, index) => {
       console.log("page fetched", index, page.events.length, page.next_before_cursor);
     }

@@ -51,6 +51,8 @@ pnpm -r build
 import { SpatiadClient } from "@spatiad/sdk";
 
 const client = new SpatiadClient("http://localhost:3000");
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000);
 
 const events = await client.getJobEventsAllPages({
   jobId: "22222222-2222-2222-2222-222222222222",
@@ -58,6 +60,7 @@ const events = await client.getJobEventsAllPages({
   maxPages: 10,
   maxEvents: 200,
   kinds: ["offer_created", "match_confirmed"],
+  signal: controller.signal,
   onPage: (page, index) => {
     console.log("fetched page", index, page.events.length);
   }

@@ -11,6 +11,7 @@ export type DispatchOfferRequest = {
   initialRadiusKm: number;
   maxRadiusKm: number;
   timeoutSeconds: number;
+  signal?: AbortSignal;
 };
 
 export type JobEventKind =
@@ -28,6 +29,7 @@ export type GetJobEventsRequest = {
   limit?: number;
   before?: string;
   kinds?: JobEventKind[];
+  signal?: AbortSignal;
 };
 
 export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & {
@@ -57,6 +59,7 @@ export class SpatiadClient {
     const response = await fetch(`${this.baseUrl}/api/v1/dispatch/offer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
+      signal: request.signal,
       body: JSON.stringify({
         job_id: request.jobId,
         category: request.category,
@@ -78,7 +81,7 @@ export class SpatiadClient {
   async getJobEvents(request: GetJobEventsRequest): Promise<JobEventsResponse> {
     const url = this.buildJobEventsUrl(request);
 
-    const response = await fetch(url, { method: "GET" });
+    const response = await fetch(url, { method: "GET", signal: request.signal });
     if (!response.ok) {
       throw new Error(`job events request failed with status ${response.status}`);
     }
@@ -101,7 +104,8 @@ export class SpatiadClient {
         jobId: request.jobId,
         limit: request.limit,
         before,
-        kinds: request.kinds
+        kinds: request.kinds,
+        signal: request.signal
       });
 
       request.onPage?.(current, page);
