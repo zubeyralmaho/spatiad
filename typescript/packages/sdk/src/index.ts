@@ -30,6 +30,10 @@ export type GetJobEventsRequest = {
   kinds?: JobEventKind[];
 };
 
+export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & {
+  maxPages?: number;
+};
+
 export type JobEvent = {
   at: string;
   kind: JobEventKind;
@@ -70,6 +74,45 @@ export class SpatiadClient {
   }
 
   async getJobEvents(request: GetJobEventsRequest): Promise<JobEventsResponse> {
+    const url = this.buildJobEventsUrl(request);
+
+    const response = await fetch(url, { method: "GET" });
+    if (!response.ok) {
+      throw new Error(`job events request failed with status ${response.status}`);
+    }
+
+    return response.json() as Promise<JobEventsResponse>;
+  }
+
+  async getJobEventsAllPages(request: GetJobEventsAllPagesRequest): Promise<JobEvent[]> {
+    const maxPages = request.maxPages ?? 10;
+    if (maxPages < 1) {
+      return [];
+    }
+
+    const allEvents: JobEvent[] = [];
+    let before: string | undefined;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const current = await this.getJobEvents({
+        jobId: request.jobId,
+        limit: request.limit,
+        before,
+        kinds: request.kinds
+      });
+
+      allEvents.push(...current.events);
+      if (!current.next_before_cursor) {
+        break;
+      }
+
+      before = current.next_before_cursor;
+    }
+
+    return allEvents;
+  }
+
+  private buildJobEventsUrl(request: GetJobEventsRequest): string {
     const search = new URLSearchParams();
     if (typeof request.limit === "number") {
       search.set("limit", String(request.limit));
@@ -82,13 +125,6 @@ export class SpatiadClient {
     }
 
     const suffix = search.toString();
-    const url = `${this.baseUrl}/api/v1/dispatch/job/${request.jobId}/events${suffix ? `?${suffix}` : ""}`;
-
-    const response = await fetch(url, { method: "GET" });
-    if (!response.ok) {
-      throw new Error(`job events request failed with status ${response.status}`);
-    }
-
-    return response.json() as Promise<JobEventsResponse>;
+    return `${this.baseUrl}/api/v1/dispatch/job/${request.jobId}/events${suffix ? `?${suffix}` : ""}`;
   }
 }

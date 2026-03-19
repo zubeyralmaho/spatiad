@@ -45,6 +45,15 @@ const run = async () => {
   });
 
   console.log("filtered events", events);
+
+  const allFilteredEvents = await client.getJobEventsAllPages({
+    jobId: "33333333-3333-3333-3333-333333333333",
+    limit: 10,
+    maxPages: 5,
+    kinds: ["offer_created", "match_confirmed"]
+  });
+
+  console.log("all filtered events", allFilteredEvents.length);
 };
 
 run().catch((error) => {
