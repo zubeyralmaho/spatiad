@@ -966,6 +966,7 @@ dependencies = [
  "axum",
  "chrono",
  "serde",
+ "serde_json",
  "spatiad-dispatch",
  "spatiad-types",
  "spatiad-ws",
