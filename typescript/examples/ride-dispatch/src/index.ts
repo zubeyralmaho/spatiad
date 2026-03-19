@@ -36,7 +36,11 @@ const run = async () => {
     dropoff: { latitude: 38.44, longitude: 26.78 },
     initialRadiusKm: 1,
     maxRadiusKm: 5,
-    timeoutSeconds: 20
+    timeoutSeconds: 20,
+    retry: {
+      maxAttempts: 3,
+      backoffMs: 100
+    }
   });
 
   console.log("offer response", response);
@@ -56,6 +60,11 @@ const run = async () => {
     maxEvents: 100,
     kinds: ["offer_created", "match_confirmed"],
     signal: controller.signal,
+    retry: {
+      maxAttempts: 4,
+      backoffMs: 120,
+      maxBackoffMs: 1000
+    },
     onPage: (page, index) => {
       console.log("page fetched", index, page.events.length, page.next_before_cursor);
     }

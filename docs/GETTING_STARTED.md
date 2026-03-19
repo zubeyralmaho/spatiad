@@ -61,6 +61,11 @@ const events = await client.getJobEventsAllPages({
   maxEvents: 200,
   kinds: ["offer_created", "match_confirmed"],
   signal: controller.signal,
+  retry: {
+    maxAttempts: 4,
+    backoffMs: 100,
+    maxBackoffMs: 1500
+  },
   onPage: (page, index) => {
     console.log("fetched page", index, page.events.length);
   }

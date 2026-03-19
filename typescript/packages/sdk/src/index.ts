@@ -3,6 +3,13 @@ export type Coordinates = {
   longitude: number;
 };
 
+export type RetryOptions = {
+  maxAttempts?: number;
+  backoffMs?: number;
+  maxBackoffMs?: number;
+  retryOnStatuses?: number[];
+};
+
 export type DispatchOfferRequest = {
   jobId: string;
   category: string;
@@ -12,6 +19,7 @@ export type DispatchOfferRequest = {
   maxRadiusKm: number;
   timeoutSeconds: number;
   signal?: AbortSignal;
+  retry?: RetryOptions;
 };
 
 export type JobEventKind =
@@ -30,6 +38,7 @@ export type GetJobEventsRequest = {
   before?: string;
   kinds?: JobEventKind[];
   signal?: AbortSignal;
+  retry?: RetryOptions;
 };
 
 export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & {
@@ -56,7 +65,7 @@ export class SpatiadClient {
   constructor(private readonly baseUrl: string) {}
 
   async createOffer(request: DispatchOfferRequest): Promise<{ offer_id: string }> {
-    const response = await fetch(`${this.baseUrl}/api/v1/dispatch/offer`, {
+    const response = await this.fetchWithRetry(`${this.baseUrl}/api/v1/dispatch/offer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       signal: request.signal,
@@ -69,7 +78,7 @@ export class SpatiadClient {
         max_radius_km: request.maxRadiusKm,
         timeout_seconds: request.timeoutSeconds
       })
-    });
+    }, request.retry);
 
     if (!response.ok) {
       throw new Error(`dispatch offer failed with status ${response.status}`);
@@ -81,7 +90,11 @@ export class SpatiadClient {
   async getJobEvents(request: GetJobEventsRequest): Promise<JobEventsResponse> {
     const url = this.buildJobEventsUrl(request);
 
-    const response = await fetch(url, { method: "GET", signal: request.signal });
+    const response = await this.fetchWithRetry(
+      url,
+      { method: "GET", signal: request.signal },
+      request.retry
+    );
     if (!response.ok) {
       throw new Error(`job events request failed with status ${response.status}`);
     }
@@ -105,7 +118,8 @@ export class SpatiadClient {
         limit: request.limit,
         before,
         kinds: request.kinds,
-        signal: request.signal
+        signal: request.signal,
+        retry: request.retry
       });
 
       request.onPage?.(current, page);
@@ -140,4 +154,62 @@ export class SpatiadClient {
     const suffix = search.toString();
     return `${this.baseUrl}/api/v1/dispatch/job/${request.jobId}/events${suffix ? `?${suffix}` : ""}`;
   }
+
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    retry?: RetryOptions
+  ): Promise<Response> {
+    const signal = init.signal ?? undefined;
+    const maxAttempts = Math.max(1, retry?.maxAttempts ?? 1);
+    const baseBackoffMs = Math.max(0, retry?.backoffMs ?? 150);
+    const maxBackoffMs = Math.max(baseBackoffMs, retry?.maxBackoffMs ?? 2000);
+    const retryStatuses = retry?.retryOnStatuses ?? [408, 429, 500, 502, 503, 504];
+
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await fetch(url, init);
+        if (response.ok || !retryStatuses.includes(response.status) || attempt === maxAttempts) {
+          return response;
+        }
+      } catch (error) {
+        if (signal?.aborted) {
+          throw error;
+        }
+
+        lastError = error;
+        if (attempt === maxAttempts) {
+          throw error;
+        }
+      }
+
+      const backoff = Math.min(maxBackoffMs, baseBackoffMs * (2 ** (attempt - 1)));
+      await waitWithSignal(backoff, signal);
+    }
+
+    throw lastError instanceof Error ? lastError : new Error("request failed after retries");
+  }
+}
+
+function waitWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new Error("request aborted"));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
