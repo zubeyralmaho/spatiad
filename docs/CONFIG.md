@@ -9,6 +9,8 @@
 - SPATIAD_WEBHOOK_SECRET: optional in scaffold
 - SPATIAD_DRIVER_TOKEN: optional WS driver auth token
 - SPATIAD_DISPATCHER_TOKEN: optional dispatcher API auth token
+- SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN: max dispatch API requests per actor per minute (default 240)
+- SPATIAD_WS_RECONNECT_MAX_PER_MIN: max WS reconnect attempts per driver per minute (default 30)
 
 ## Current implemented config
 
@@ -19,6 +21,8 @@
 - `SPATIAD_BIND_ADDR`: bind address for HTTP/WS server.
 - `SPATIAD_LOG_LEVEL`: tracing log level.
 - `SPATIAD_H3_RESOLUTION`: H3 resolution used for indexing.
+- `SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN`: per-actor dispatch API sliding-window rate limit.
+- `SPATIAD_WS_RECONNECT_MAX_PER_MIN`: per-driver WS reconnect sliding-window guard.
 
 ## Current scaffold behavior
 

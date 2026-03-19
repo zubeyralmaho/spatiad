@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
-use spatiad_api::{router, start_background_tasks, ApiState};
+use spatiad_api::{router, start_background_tasks, ApiState, SlidingWindowRateLimiter, WsReconnectGuard};
 use spatiad_core::Engine;
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus};
@@ -23,6 +23,15 @@ async fn main() -> anyhow::Result<()> {
 
     let mut engine = Engine::new(h3_resolution);
 
+    let dispatch_rate_limit_per_min = std::env::var("SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(240);
+    let ws_reconnect_max_per_min = std::env::var("SPATIAD_WS_RECONNECT_MAX_PER_MIN")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(30);
+
     // Seed one driver for immediate manual tests against /dispatch/offer.
     engine.upsert_driver_location(
         Uuid::parse_str("11111111-1111-1111-1111-111111111111")?,
@@ -40,6 +49,14 @@ async fn main() -> anyhow::Result<()> {
         webhook_secret: std::env::var("SPATIAD_WEBHOOK_SECRET").ok(),
         driver_token: std::env::var("SPATIAD_DRIVER_TOKEN").ok(),
         dispatcher_token: std::env::var("SPATIAD_DISPATCHER_TOKEN").ok(),
+        dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(
+            dispatch_rate_limit_per_min,
+            60,
+        ))),
+        ws_reconnect_guard: Arc::new(Mutex::new(WsReconnectGuard::new(
+            ws_reconnect_max_per_min,
+            60,
+        ))),
         sessions: Arc::new(Mutex::new(HashMap::new())),
     };
 

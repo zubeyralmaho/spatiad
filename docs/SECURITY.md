@@ -26,6 +26,9 @@ Recommended receiver order:
 
 ## Hardening backlog
 
-- Rate limit on dispatch endpoints
-- Abuse controls on WS reconnect storms
 - Structured audit event stream
+
+## Implemented abuse controls
+
+- Dispatch endpoints use per-actor sliding-window rate limiting (`429 Too Many Requests` on overflow).
+- Driver WS endpoint enforces per-driver reconnect window limits to reduce reconnect storms (`429 Too Many Requests`).

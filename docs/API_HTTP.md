@@ -7,6 +7,7 @@ Authentication notes:
 - If `SPATIAD_DISPATCHER_TOKEN` is configured, dispatcher endpoints require either:
   - `Authorization: Bearer <token>`
   - `x-spatiad-dispatcher-token: <token>`
+- Dispatch endpoints are rate-limited per actor and may return `429 Too Many Requests`.
 
 ## GET /health
 
@@ -114,6 +115,7 @@ Response:
 
 - `200 OK` when job exists and is cancelled
 - `404 Not Found` when `job_id` is unknown
+- `429 Too Many Requests` when dispatch rate limit is exceeded
 
 ## GET /api/v1/dispatch/job/{job_id}
 

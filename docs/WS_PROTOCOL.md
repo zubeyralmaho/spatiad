@@ -7,6 +7,7 @@ Endpoint:
 Authentication:
 
 - If `SPATIAD_DRIVER_TOKEN` is configured, clients must send header `x-spatiad-driver-token` with the same token value during WS upgrade.
+- WS reconnect attempts are rate-limited per `driver_id`; excessive reconnects within the configured window are rejected with HTTP `429` during upgrade.
 
 Current implementation includes a basic session loop:
 

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, VecDeque}, sync::Arc};
 
 use axum::{
     extract::ws::Message,
@@ -28,7 +28,77 @@ pub struct ApiState {
     pub webhook_secret: Option<String>,
     pub driver_token: Option<String>,
     pub dispatcher_token: Option<String>,
+    pub dispatch_rate_limiter: Arc<Mutex<SlidingWindowRateLimiter>>,
+    pub ws_reconnect_guard: Arc<Mutex<WsReconnectGuard>>,
     pub sessions: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<DriverOutbound>>>>,
+}
+
+#[derive(Debug)]
+pub struct SlidingWindowRateLimiter {
+    limit_per_window: usize,
+    window_seconds: i64,
+    entries: HashMap<String, VecDeque<chrono::DateTime<Utc>>>,
+}
+
+impl SlidingWindowRateLimiter {
+    pub fn new(limit_per_window: usize, window_seconds: i64) -> Self {
+        Self {
+            limit_per_window: limit_per_window.max(1),
+            window_seconds: window_seconds.max(1),
+            entries: HashMap::new(),
+        }
+    }
+
+    fn allow(&mut self, key: String) -> bool {
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::seconds(self.window_seconds);
+        let queue = self.entries.entry(key).or_default();
+
+        while queue.front().map(|ts| *ts <= cutoff).unwrap_or(false) {
+            queue.pop_front();
+        }
+
+        if queue.len() >= self.limit_per_window {
+            return false;
+        }
+
+        queue.push_back(now);
+        true
+    }
+}
+
+#[derive(Debug)]
+pub struct WsReconnectGuard {
+    max_reconnects_per_window: usize,
+    window_seconds: i64,
+    attempts: HashMap<Uuid, VecDeque<chrono::DateTime<Utc>>>,
+}
+
+impl WsReconnectGuard {
+    pub fn new(max_reconnects_per_window: usize, window_seconds: i64) -> Self {
+        Self {
+            max_reconnects_per_window: max_reconnects_per_window.max(1),
+            window_seconds: window_seconds.max(1),
+            attempts: HashMap::new(),
+        }
+    }
+
+    fn allow(&mut self, driver_id: Uuid) -> bool {
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::seconds(self.window_seconds);
+        let queue = self.attempts.entry(driver_id).or_default();
+
+        while queue.front().map(|ts| *ts <= cutoff).unwrap_or(false) {
+            queue.pop_front();
+        }
+
+        if queue.len() >= self.max_reconnects_per_window {
+            return false;
+        }
+
+        queue.push_back(now);
+        true
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -139,6 +209,17 @@ async fn dispatch_offer(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    if !allow_dispatch_request(&state, &headers, "dispatch_offer").await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiErrorResponse {
+                error: "rate_limited",
+                message: "dispatch request rate limit exceeded".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let mut dispatch = state.dispatch.lock().await;
     let request = JobRequest {
         job_id: payload.job_id,
@@ -166,6 +247,10 @@ async fn upsert_driver(
         return StatusCode::UNAUTHORIZED;
     }
 
+    if !allow_dispatch_request(&state, &headers, "driver_upsert").await {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
+
     let mut dispatch = state.dispatch.lock().await;
     dispatch.engine.upsert_driver_location(
         payload.driver_id,
@@ -186,6 +271,10 @@ async fn cancel_offer(
         return StatusCode::UNAUTHORIZED;
     }
 
+    if !allow_dispatch_request(&state, &headers, "dispatch_cancel_offer").await {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
+
     let mut dispatch = state.dispatch.lock().await;
     dispatch.cancel_offer(payload.offer_id);
     axum::http::StatusCode::OK
@@ -198,6 +287,10 @@ async fn cancel_job(
 ) -> impl IntoResponse {
     if !is_dispatcher_authorized(&state, &headers) {
         return StatusCode::UNAUTHORIZED;
+    }
+
+    if !allow_dispatch_request(&state, &headers, "dispatch_cancel_job").await {
+        return StatusCode::TOO_MANY_REQUESTS;
     }
 
     let mut dispatch = state.dispatch.lock().await;
@@ -215,6 +308,17 @@ async fn dispatch_job_status(
 ) -> impl IntoResponse {
     if !is_dispatcher_authorized(&state, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    if !allow_dispatch_request(&state, &headers, "dispatch_job_status").await {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiErrorResponse {
+                error: "rate_limited",
+                message: "dispatch request rate limit exceeded".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let dispatch = state.dispatch.lock().await;
@@ -277,6 +381,16 @@ async fn dispatch_job_events(
             Json(ApiErrorResponse {
                 error: "unauthorized",
                 message: "missing or invalid dispatcher auth token".to_string(),
+            }),
+        ));
+    }
+
+    if !allow_dispatch_request(&state, &headers, "dispatch_job_events").await {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiErrorResponse {
+                error: "rate_limited",
+                message: "dispatch request rate limit exceeded".to_string(),
             }),
         ));
     }
@@ -377,10 +491,55 @@ async fn driver_ws(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    if !allow_driver_ws_connect(&state, driver_id).await {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+
     ws.on_upgrade(move |socket: WebSocket| async move {
         handle_driver_session(state, driver_id, socket).await;
     })
     .into_response()
+}
+
+async fn allow_dispatch_request(state: &ApiState, headers: &HeaderMap, endpoint: &str) -> bool {
+    let actor = dispatch_actor_key(headers);
+    let key = format!("{}:{}", endpoint, actor);
+    let mut limiter = state.dispatch_rate_limiter.lock().await;
+    limiter.allow(key)
+}
+
+fn dispatch_actor_key(headers: &HeaderMap) -> String {
+    if let Some(client_id) = headers
+        .get("x-spatiad-client-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("client:{}", client_id);
+    }
+
+    if headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some()
+    {
+        return "auth_header".to_string();
+    }
+
+    if headers
+        .get("x-spatiad-dispatcher-token")
+        .and_then(|value| value.to_str().ok())
+        .is_some()
+    {
+        return "dispatcher_header".to_string();
+    }
+
+    "anonymous".to_string()
+}
+
+async fn allow_driver_ws_connect(state: &ApiState, driver_id: Uuid) -> bool {
+    let mut guard = state.ws_reconnect_guard.lock().await;
+    guard.allow(driver_id)
 }
 
 fn is_driver_authorized(state: &ApiState, headers: &HeaderMap) -> bool {
@@ -1177,6 +1336,56 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn dispatch_job_events_returns_429_when_rate_limited() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let mut state = seeded_api_state(job_id, driver_id);
+        state.dispatch_rate_limiter = Arc::new(Mutex::new(SlidingWindowRateLimiter::new(1, 60)));
+
+        let first = dispatch_job_events(
+            State(state.clone()),
+            HeaderMap::new(),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: None,
+                cursor: None,
+                kinds: None,
+            }),
+        )
+        .await;
+        assert!(first.is_ok());
+
+        let second = dispatch_job_events(
+            State(state),
+            HeaderMap::new(),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: None,
+                cursor: None,
+                kinds: None,
+            }),
+        )
+        .await
+        .expect_err("second request should be rate limited");
+
+        assert_eq!(second.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(second.1.error, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn ws_reconnect_guard_blocks_storm_attempts() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let mut state = seeded_api_state(job_id, driver_id);
+        state.ws_reconnect_guard = Arc::new(Mutex::new(WsReconnectGuard::new(1, 60)));
+
+        assert!(allow_driver_ws_connect(&state, driver_id).await);
+        assert!(!allow_driver_ws_connect(&state, driver_id).await);
+    }
+
     fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {
         let mut engine = Engine::new(8);
 
@@ -1214,6 +1423,8 @@ mod tests {
             webhook_secret: None,
             driver_token: None,
             dispatcher_token: None,
+            dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(1000, 60))),
+            ws_reconnect_guard: Arc::new(Mutex::new(WsReconnectGuard::new(1000, 60))),
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
