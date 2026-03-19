@@ -1,0 +1,12 @@
+[package]
+name = "spatiad-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+spatiad-h3 = { path = "../spatiad-h3" }
+spatiad-types = { path = "../spatiad-types" }
+thiserror.workspace = true
+uuid.workspace = true

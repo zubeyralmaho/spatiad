@@ -1,0 +1,15 @@
+[package]
+name = "spatiad-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+spatiad-dispatch = { path = "../spatiad-dispatch" }
+spatiad-types = { path = "../spatiad-types" }
+spatiad-ws = { path = "../spatiad-ws" }
+tokio.workspace = true
+uuid.workspace = true

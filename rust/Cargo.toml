@@ -1,0 +1,30 @@
+[workspace]
+members = [
+  "crates/spatiad-types",
+  "crates/spatiad-h3",
+  "crates/spatiad-core",
+  "crates/spatiad-dispatch",
+  "crates/spatiad-ws",
+  "crates/spatiad-api",
+  "crates/spatiad-bin",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["ws", "json", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+h3o = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }

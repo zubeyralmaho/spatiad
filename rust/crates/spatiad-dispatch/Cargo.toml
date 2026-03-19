@@ -1,0 +1,11 @@
+[package]
+name = "spatiad-dispatch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+spatiad-core = { path = "../spatiad-core" }
+spatiad-types = { path = "../spatiad-types" }
+thiserror.workspace = true
+uuid.workspace = true

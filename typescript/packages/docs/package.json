@@ -1,0 +1,10 @@
+{
+  "name": "@spatiad/docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'docs build step placeholder'",
+    "test": "echo 'docs verification placeholder'",
+    "lint": "echo 'docs lint placeholder'"
+  }
+}

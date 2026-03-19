@@ -1,0 +1,11 @@
+[package]
+name = "spatiad-h3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+h3o.workspace = true
+serde.workspace = true
+spatiad-types = { path = "../spatiad-types" }
+uuid.workspace = true

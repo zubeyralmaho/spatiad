@@ -1,0 +1,11 @@
+[package]
+name = "spatiad-ws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+spatiad-types = { path = "../spatiad-types" }
+uuid.workspace = true

@@ -1,0 +1,18 @@
+# Rust
+rust/target/
+
+# Node
+node_modules/
+typescript/node_modules/
+typescript/packages/*/node_modules/
+typescript/**/dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.local

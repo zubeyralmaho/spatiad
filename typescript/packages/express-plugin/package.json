@@ -1,0 +1,19 @@
+{
+  "name": "@spatiad/express-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test",
+    "lint": "echo 'no lint configured yet'"
+  },
+  "dependencies": {
+    "@spatiad/sdk": "workspace:*",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1"
+  }
+}

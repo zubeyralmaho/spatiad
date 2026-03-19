@@ -1,0 +1,17 @@
+[package]
+name = "spatiad-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+spatiad-api = { path = "../spatiad-api" }
+spatiad-core = { path = "../spatiad-core" }
+spatiad-dispatch = { path = "../spatiad-dispatch" }
+spatiad-types = { path = "../spatiad-types" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
