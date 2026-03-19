@@ -93,6 +93,14 @@ try {
   });
   console.log(jobStatus.state);
 
+  for await (const event of client.iterateJobEvents({
+    jobId: "22222222-2222-2222-2222-222222222222",
+    limit: 10,
+    maxEvents: 50
+  })) {
+    console.log(event.kind, event.at);
+  }
+
   console.log(events.length);
 } catch (error) {
   if (error instanceof SpatiadApiError) {

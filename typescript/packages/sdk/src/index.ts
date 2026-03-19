@@ -99,6 +99,8 @@ export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & 
   onPage?: (page: JobEventsResponse, pageIndex: number) => void;
 };
 
+export type IterateJobEventsRequest = GetJobEventsAllPagesRequest;
+
 export type JobEvent = {
   at: string;
   kind: JobEventKind;
@@ -274,6 +276,48 @@ export class SpatiadClient {
     }
 
     return allEvents;
+  }
+
+  async *iterateJobEvents(request: IterateJobEventsRequest): AsyncGenerator<JobEvent, void, void> {
+    const maxPages = request.maxPages ?? 10;
+    const maxEvents = request.maxEvents;
+    if (maxPages < 1) {
+      return;
+    }
+
+    let cursor: string | undefined;
+    let yielded = 0;
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const current = await this.getJobEvents({
+        jobId: request.jobId,
+        limit: request.limit,
+        cursor,
+        kinds: request.kinds,
+        dispatcherToken: request.dispatcherToken,
+        dispatcherAuthMode: request.dispatcherAuthMode,
+        signal: request.signal,
+        retry: request.retry
+      });
+
+      request.onPage?.(current, page);
+
+      for (const event of current.events) {
+        yield event;
+        yielded += 1;
+
+        if (typeof maxEvents === "number" && maxEvents >= 0 && yielded >= maxEvents) {
+          return;
+        }
+      }
+
+      const nextCursor = current.next_cursor ?? current.next_before_cursor;
+      if (!nextCursor) {
+        return;
+      }
+
+      cursor = nextCursor;
+    }
   }
 
   private buildJobEventsUrl(request: GetJobEventsRequest): string {

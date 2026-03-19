@@ -447,3 +447,87 @@ test("getJobStatus returns typed response", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("iterateJobEvents streams events across pages", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+
+    if (calls.length === 1) {
+      return makeJsonResponse(200, {
+        job_id: "job-iter-1",
+        events: [
+          { at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" },
+          { at: "2026-03-20T09:59:00Z", kind: "offer_rejected", offer_id: "o1", driver_id: "d1", status: "rejected" }
+        ],
+        next_cursor: "2026-03-20T09:58:00Z|4",
+        next_before_cursor: "2026-03-20T09:58:00Z"
+      });
+    }
+
+    return makeJsonResponse(200, {
+      job_id: "job-iter-1",
+      events: [
+        { at: "2026-03-20T09:58:00Z", kind: "offer_created", offer_id: "o2", driver_id: "d2", status: "pending" }
+      ],
+      next_cursor: null,
+      next_before_cursor: null
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    const streamed = [];
+
+    for await (const event of client.iterateJobEvents({
+      jobId: "job-iter-1",
+      limit: 2
+    })) {
+      streamed.push(event.kind);
+    }
+
+    assert.deepEqual(streamed, ["offer_created", "offer_rejected", "offer_created"]);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1], /cursor=2026-03-20T09%3A58%3A00Z%7C4/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("iterateJobEvents respects maxEvents", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+
+  globalThis.fetch = async () => {
+    calls += 1;
+    return makeJsonResponse(200, {
+      job_id: "job-iter-2",
+      events: [
+        { at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" },
+        { at: "2026-03-20T09:59:00Z", kind: "offer_created", offer_id: "o2", driver_id: "d2", status: "pending" }
+      ],
+      next_cursor: "2026-03-20T09:58:00Z|10",
+      next_before_cursor: "2026-03-20T09:58:00Z"
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    const streamed = [];
+
+    for await (const event of client.iterateJobEvents({
+      jobId: "job-iter-2",
+      maxEvents: 3,
+      maxPages: 10
+    })) {
+      streamed.push(event.kind);
+    }
+
+    assert.equal(streamed.length, 3);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
