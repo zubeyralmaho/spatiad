@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "@spatiad/express-plugin": "workspace:*",
+    "@spatiad/sdk": "workspace:*",
     "express": "^4.21.2",
-    "@spatiad/sdk": "workspace:*"
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "@types/express": "^5.0.1"
+    "@types/express": "^5.0.1",
+    "@types/uuid": "^9.0.7"
   }
 }
