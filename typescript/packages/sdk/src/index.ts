@@ -102,6 +102,7 @@ export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & 
 export type IterateJobEventsRequest = GetJobEventsAllPagesRequest & {
   resumeOnTransientError?: boolean;
   maxResumeAttempts?: number;
+  shouldResumeOnError?: (error: SpatiadApiError, attempt: number) => boolean;
 };
 
 export type JobEvent = {
@@ -290,6 +291,7 @@ export class SpatiadClient {
 
     const resumeOnTransientError = request.resumeOnTransientError ?? false;
     const maxResumeAttempts = Math.max(0, request.maxResumeAttempts ?? 3);
+    const shouldResumeOnError = request.shouldResumeOnError;
     let cursor: string | undefined;
     let yielded = 0;
     let resumeAttempts = 0;
@@ -308,13 +310,19 @@ export class SpatiadClient {
           retry: request.retry
         });
       } catch (error) {
+        const nextAttempt = resumeAttempts + 1;
+        const apiError = error instanceof SpatiadApiError ? error : undefined;
+        const callbackAllowsResume =
+          apiError !== undefined
+          && shouldResumeOnError !== undefined
+          && shouldResumeOnError(apiError, nextAttempt);
+
         if (
-          resumeOnTransientError
-          && error instanceof SpatiadApiError
-          && error.retryable
+          apiError !== undefined
           && resumeAttempts < maxResumeAttempts
+          && (callbackAllowsResume || (resumeOnTransientError && apiError.retryable))
         ) {
-          resumeAttempts += 1;
+          resumeAttempts = nextAttempt;
           const backoffBase = Math.max(0, request.retry?.backoffMs ?? 150);
           const backoffMax = Math.max(backoffBase, request.retry?.maxBackoffMs ?? 2000);
           const waitMs = Math.min(backoffMax, backoffBase * (2 ** (resumeAttempts - 1)));

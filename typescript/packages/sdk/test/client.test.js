@@ -607,3 +607,51 @@ test("iterateJobEvents fails without resumeOnTransientError", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("iterateJobEvents can resume via shouldResumeOnError callback", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const observedAttempts = [];
+
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls <= 2) {
+      return makeJsonResponse(400, {
+        error: "invalid_query",
+        message: "temporary parse mismatch"
+      });
+    }
+
+    return makeJsonResponse(200, {
+      job_id: "job-iter-callback",
+      events: [
+        { at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" }
+      ],
+      next_cursor: null,
+      next_before_cursor: null
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    const streamed = [];
+
+    for await (const event of client.iterateJobEvents({
+      jobId: "job-iter-callback",
+      maxResumeAttempts: 2,
+      shouldResumeOnError: (error, attempt) => {
+        observedAttempts.push(`${error.status}:${attempt}`);
+        return error.status === 400 && attempt <= 2;
+      },
+      retry: { maxAttempts: 1, backoffMs: 1 }
+    })) {
+      streamed.push(event.kind);
+    }
+
+    assert.deepEqual(observedAttempts, ["400:1", "400:2"]);
+    assert.deepEqual(streamed, ["offer_created"]);
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
