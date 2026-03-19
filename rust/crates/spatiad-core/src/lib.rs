@@ -45,13 +45,34 @@ pub enum JobDispatchState {
     Exhausted,
 }
 
+#[derive(Debug, Clone)]
+pub enum JobEventKind {
+    JobRegistered,
+    OfferCreated { offer_id: Uuid, driver_id: Uuid },
+    OfferExpired { offer_id: Uuid, driver_id: Uuid },
+    OfferCancelled { offer_id: Uuid, driver_id: Uuid },
+    OfferRejected { offer_id: Uuid, driver_id: Uuid },
+    OfferAccepted { offer_id: Uuid, driver_id: Uuid },
+    MatchConfirmed { offer_id: Uuid, driver_id: Uuid },
+    OfferStatusUpdated { offer_id: Uuid, status: OfferStatus },
+}
+
+#[derive(Debug, Clone)]
+pub struct JobEventRecord {
+    pub occurred_at: chrono::DateTime<Utc>,
+    pub kind: JobEventKind,
+}
+
 #[derive(Debug)]
 pub struct Engine {
     spatial: SpatialIndex,
     drivers: HashMap<Uuid, DriverSnapshot>,
     jobs: HashMap<Uuid, JobRequest>,
     offers: HashMap<Uuid, OfferRecord>,
+    job_events: HashMap<Uuid, Vec<JobEventRecord>>,
 }
+
+const MAX_JOB_EVENTS: usize = 200;
 
 impl Engine {
     pub fn new(h3_resolution: u8) -> Self {
@@ -60,6 +81,7 @@ impl Engine {
             drivers: HashMap::new(),
             jobs: HashMap::new(),
             offers: HashMap::new(),
+            job_events: HashMap::new(),
         }
     }
 
@@ -83,7 +105,9 @@ impl Engine {
     }
 
     pub fn register_job(&mut self, job: JobRequest) {
-        self.jobs.insert(job.job_id, job);
+        let job_id = job.job_id;
+        self.jobs.insert(job_id, job);
+        self.push_job_event(job_id, JobEventKind::JobRegistered);
     }
 
     pub fn create_offer(&mut self, job_id: Uuid, driver_id: Uuid, timeout_seconds: u64) -> OfferRecord {
@@ -97,6 +121,13 @@ impl Engine {
         };
 
         self.offers.insert(offer.offer_id, offer.clone());
+        self.push_job_event(
+            job_id,
+            JobEventKind::OfferCreated {
+                offer_id: offer.offer_id,
+                driver_id,
+            },
+        );
         offer
     }
 
@@ -130,7 +161,16 @@ impl Engine {
 
     pub fn mark_offer_status(&mut self, offer_id: Uuid, status: OfferStatus) -> Result<(), CoreError> {
         let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
+        let job_id = offer.job_id;
+        let status_for_event = status.clone();
         offer.status = status;
+        self.push_job_event(
+            job_id,
+            JobEventKind::OfferStatusUpdated {
+                offer_id,
+                status: status_for_event,
+            },
+        );
         Ok(())
     }
 
@@ -157,6 +197,7 @@ impl Engine {
     pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<Uuid> {
         let now = Utc::now();
         let mut expired = Vec::new();
+        let mut expired_events: Vec<(Uuid, Uuid)> = Vec::new();
 
         for offer in self.offers.values_mut() {
             if offer.driver_id == driver_id
@@ -165,7 +206,18 @@ impl Engine {
             {
                 offer.status = OfferStatus::Expired;
                 expired.push(offer.offer_id);
+                expired_events.push((offer.job_id, offer.offer_id));
             }
+        }
+
+        for (job_id, offer_id) in expired_events {
+            self.push_job_event(
+                job_id,
+                JobEventKind::OfferExpired {
+                    offer_id,
+                    driver_id,
+                },
+            );
         }
 
         expired
@@ -211,11 +263,21 @@ impl Engine {
         JobDispatchState::Exhausted
     }
 
+    pub fn job_events(&self, job_id: Uuid, limit: usize) -> Vec<JobEventRecord> {
+        let max_items = if limit == 0 { 50 } else { limit };
+        self.job_events
+            .get(&job_id)
+            .map(|events| events.iter().rev().take(max_items).cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub fn handle_offer_response(
         &mut self,
         offer_id: Uuid,
         accepted: bool,
     ) -> Result<Option<MatchResult>, CoreError> {
+        let mut deferred_events: Vec<(Uuid, JobEventKind)> = Vec::new();
+
         let (job_id, driver_id, selected_offer_id) = {
             let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
             if offer.status != OfferStatus::Pending {
@@ -230,6 +292,17 @@ impl Engine {
                 offer.status = OfferStatus::Accepted;
             } else {
                 offer.status = OfferStatus::Rejected;
+                deferred_events.push((
+                    offer.job_id,
+                    JobEventKind::OfferRejected {
+                        offer_id: offer.offer_id,
+                        driver_id: offer.driver_id,
+                    },
+                ));
+
+                for (event_job_id, event_kind) in deferred_events {
+                    self.push_job_event(event_job_id, event_kind);
+                }
                 return Ok(None);
             }
 
@@ -243,11 +316,37 @@ impl Engine {
                 && other_offer.status == OfferStatus::Pending
             {
                 other_offer.status = OfferStatus::Cancelled;
+                deferred_events.push((
+                    job_id,
+                    JobEventKind::OfferCancelled {
+                        offer_id: other_offer.offer_id,
+                        driver_id: other_offer.driver_id,
+                    },
+                ));
             }
         }
 
         if let Some(driver) = self.drivers.get_mut(&driver_id) {
             driver.status = DriverStatus::Busy;
+        }
+
+        deferred_events.push((
+            job_id,
+            JobEventKind::OfferAccepted {
+                offer_id: selected_offer_id,
+                driver_id,
+            },
+        ));
+        deferred_events.push((
+            job_id,
+            JobEventKind::MatchConfirmed {
+                offer_id: selected_offer_id,
+                driver_id,
+            },
+        ));
+
+        for (event_job_id, event_kind) in deferred_events {
+            self.push_job_event(event_job_id, event_kind);
         }
 
         Ok(Some(MatchResult {
@@ -407,6 +506,68 @@ mod tests {
             engine.job_dispatch_state(job_id),
             JobDispatchState::Matched { .. }
         ));
+    }
+
+    #[test]
+    fn job_event_history_contains_offer_and_match_events() {
+        let mut engine = Engine::new(8);
+        let driver_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let offer = engine.create_offer(job_id, driver_id, 30);
+        engine
+            .handle_offer_response(offer.offer_id, true)
+            .expect("offer response should succeed")
+            .expect("match result expected");
+
+        let events = engine.job_events(job_id, 20);
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            JobEventKind::OfferCreated { .. }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            JobEventKind::MatchConfirmed { .. }
+        )));
+    }
+}
+
+impl Engine {
+    fn push_job_event(&mut self, job_id: Uuid, kind: JobEventKind) {
+        let entries = self.job_events.entry(job_id).or_default();
+        entries.push(JobEventRecord {
+            occurred_at: Utc::now(),
+            kind,
+        });
+
+        if entries.len() > MAX_JOB_EVENTS {
+            let overflow = entries.len() - MAX_JOB_EVENTS;
+            entries.drain(0..overflow);
+        }
     }
 }
 

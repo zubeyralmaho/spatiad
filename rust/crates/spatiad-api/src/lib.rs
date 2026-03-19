@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::ws::Message,
-    extract::{Path, State, WebSocketUpgrade},
+    extract::{Path, Query, State, WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -13,9 +13,9 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use spatiad_core::JobDispatchState;
+use spatiad_core::{JobDispatchState, JobEventKind, JobEventRecord};
 use spatiad_dispatch::DispatchService;
-use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult};
+use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult, OfferStatus};
 use spatiad_ws::{DriverInbound, DriverOutbound};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
@@ -66,6 +66,26 @@ pub struct JobStatusResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct JobEventsQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobEventsResponse {
+    pub job_id: Uuid,
+    pub events: Vec<JobEventResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JobEventResponse {
+    pub at: chrono::DateTime<Utc>,
+    pub kind: &'static str,
+    pub offer_id: Option<Uuid>,
+    pub driver_id: Option<Uuid>,
+    pub status: Option<&'static str>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DriverUpsertRequest {
     pub driver_id: Uuid,
     pub category: String,
@@ -80,6 +100,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/dispatch/offer", post(dispatch_offer))
         .route("/api/v1/dispatch/cancel", post(cancel_offer))
         .route("/api/v1/dispatch/job/:job_id", get(dispatch_job_status))
+        .route("/api/v1/dispatch/job/:job_id/events", get(dispatch_job_events))
         .route("/api/v1/stream/driver/:driver_id", get(driver_ws))
         .with_state(state)
 }
@@ -181,6 +202,22 @@ async fn dispatch_job_status(
     };
 
     Json(response)
+}
+
+async fn dispatch_job_events(
+    State(state): State<ApiState>,
+    Path(job_id): Path<Uuid>,
+    Query(query): Query<JobEventsQuery>,
+) -> Json<JobEventsResponse> {
+    let dispatch = state.dispatch.lock().await;
+    let limit = query.limit.unwrap_or(50);
+    let events = dispatch
+        .job_events(job_id, limit)
+        .into_iter()
+        .map(map_job_event)
+        .collect();
+
+    Json(JobEventsResponse { job_id, events })
 }
 
 async fn driver_ws(
@@ -475,6 +512,79 @@ fn sign_webhook(secret: &str, timestamp: &str, nonce: &str, body: &str) -> Resul
     mac.update(body.as_bytes());
     let bytes = mac.finalize().into_bytes();
     Ok(hex::encode(bytes))
+}
+
+fn map_job_event(event: JobEventRecord) -> JobEventResponse {
+    let at = event.occurred_at;
+
+    match event.kind {
+        JobEventKind::JobRegistered => JobEventResponse {
+            at,
+            kind: "job_registered",
+            offer_id: None,
+            driver_id: None,
+            status: None,
+        },
+        JobEventKind::OfferCreated { offer_id, driver_id } => JobEventResponse {
+            at,
+            kind: "offer_created",
+            offer_id: Some(offer_id),
+            driver_id: Some(driver_id),
+            status: Some("pending"),
+        },
+        JobEventKind::OfferExpired { offer_id, driver_id } => JobEventResponse {
+            at,
+            kind: "offer_expired",
+            offer_id: Some(offer_id),
+            driver_id: Some(driver_id),
+            status: Some("expired"),
+        },
+        JobEventKind::OfferCancelled { offer_id, driver_id } => JobEventResponse {
+            at,
+            kind: "offer_cancelled",
+            offer_id: Some(offer_id),
+            driver_id: Some(driver_id),
+            status: Some("cancelled"),
+        },
+        JobEventKind::OfferRejected { offer_id, driver_id } => JobEventResponse {
+            at,
+            kind: "offer_rejected",
+            offer_id: Some(offer_id),
+            driver_id: Some(driver_id),
+            status: Some("rejected"),
+        },
+        JobEventKind::OfferAccepted { offer_id, driver_id } => JobEventResponse {
+            at,
+            kind: "offer_accepted",
+            offer_id: Some(offer_id),
+            driver_id: Some(driver_id),
+            status: Some("accepted"),
+        },
+        JobEventKind::MatchConfirmed { offer_id, driver_id } => JobEventResponse {
+            at,
+            kind: "match_confirmed",
+            offer_id: Some(offer_id),
+            driver_id: Some(driver_id),
+            status: Some("matched"),
+        },
+        JobEventKind::OfferStatusUpdated { offer_id, status } => JobEventResponse {
+            at,
+            kind: "offer_status_updated",
+            offer_id: Some(offer_id),
+            driver_id: None,
+            status: Some(offer_status_label(status)),
+        },
+    }
+}
+
+fn offer_status_label(status: OfferStatus) -> &'static str {
+    match status {
+        OfferStatus::Pending => "pending",
+        OfferStatus::Accepted => "accepted",
+        OfferStatus::Rejected => "rejected",
+        OfferStatus::Expired => "expired",
+        OfferStatus::Cancelled => "cancelled",
+    }
 }
 
 #[cfg(test)]

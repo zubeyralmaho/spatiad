@@ -116,3 +116,24 @@ Possible `state` values:
 - `searching`
 - `matched`
 - `exhausted`
+
+## GET /api/v1/dispatch/job/{job_id}/events?limit=50
+
+Returns recent dispatch event history for a job (most recent first).
+
+Response:
+
+```json
+{
+  "job_id": "uuid",
+  "events": [
+    {
+      "at": "2026-03-20T10:00:00Z",
+      "kind": "match_confirmed",
+      "offer_id": "uuid",
+      "driver_id": "uuid",
+      "status": "matched"
+    }
+  ]
+}
+```
