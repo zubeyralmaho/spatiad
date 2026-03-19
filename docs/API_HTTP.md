@@ -117,7 +117,7 @@ Possible `state` values:
 - `matched`
 - `exhausted`
 
-## GET /api/v1/dispatch/job/{job_id}/events?limit=50&before=2026-03-20T10:00:00Z
+## GET /api/v1/dispatch/job/{job_id}/events?limit=50&before=2026-03-20T10:00:00Z&kinds=offer_created,match_confirmed
 
 Returns recent dispatch event history for a job (most recent first).
 
@@ -125,6 +125,8 @@ Query params:
 
 - `limit` (optional): max event count, default 50
 - `before` (optional): RFC3339 timestamp cursor; returns events older than this value
+- `kinds` (optional): comma-separated event kind filter
+  - Supported values: `job_registered`, `offer_created`, `offer_expired`, `offer_cancelled`, `offer_rejected`, `offer_accepted`, `match_confirmed`, `offer_status_updated`
 
 Response:
 
@@ -147,3 +149,14 @@ Response:
 Pagination:
 
 - If `next_before_cursor` is non-null, call the same endpoint with `before=<next_before_cursor>` to fetch the next page.
+
+Validation:
+
+- If `kinds` contains an unsupported value, endpoint returns `400 Bad Request` with:
+
+```json
+{
+  "error": "invalid_query",
+  "message": "unsupported event kind '...'"
+}
+```

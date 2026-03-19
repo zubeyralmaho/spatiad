@@ -57,6 +57,18 @@ pub enum JobEventKind {
     OfferStatusUpdated { offer_id: Uuid, status: OfferStatus },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JobEventFilterKind {
+    JobRegistered,
+    OfferCreated,
+    OfferExpired,
+    OfferCancelled,
+    OfferRejected,
+    OfferAccepted,
+    MatchConfirmed,
+    OfferStatusUpdated,
+}
+
 #[derive(Debug, Clone)]
 pub struct JobEventRecord {
     pub occurred_at: chrono::DateTime<Utc>,
@@ -273,6 +285,16 @@ impl Engine {
         limit: usize,
         before: Option<chrono::DateTime<Utc>>,
     ) -> Vec<JobEventRecord> {
+        self.job_events_before_filtered(job_id, limit, before, None)
+    }
+
+    pub fn job_events_before_filtered(
+        &self,
+        job_id: Uuid,
+        limit: usize,
+        before: Option<chrono::DateTime<Utc>>,
+        kinds: Option<&[JobEventFilterKind]>,
+    ) -> Vec<JobEventRecord> {
         let max_items = if limit == 0 { 50 } else { limit };
         self.job_events
             .get(&job_id)
@@ -281,6 +303,14 @@ impl Engine {
                     .iter()
                     .rev()
                     .filter(|event| before.map(|cursor| event.occurred_at < cursor).unwrap_or(true))
+                    .filter(|event| {
+                        kinds
+                            .map(|requested| {
+                                requested.is_empty()
+                                    || requested.contains(&event_filter_kind(&event.kind))
+                            })
+                            .unwrap_or(true)
+                    })
                     .take(max_items)
                     .cloned()
                     .collect()
@@ -617,6 +647,52 @@ mod tests {
         let page_two = engine.job_events_before(job_id, 10, Some(cursor));
         assert!(page_two.iter().all(|event| event.occurred_at < cursor));
     }
+
+    #[test]
+    fn job_events_before_can_filter_by_event_kind() {
+        let mut engine = Engine::new(8);
+        let driver_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let offer = engine.create_offer(job_id, driver_id, 30);
+        let _ = engine.handle_offer_response(offer.offer_id, false);
+
+        let filtered = engine.job_events_before_filtered(
+            job_id,
+            20,
+            None,
+            Some(&[JobEventFilterKind::OfferRejected]),
+        );
+
+        assert!(!filtered.is_empty());
+        assert!(filtered
+            .iter()
+            .all(|event| matches!(event.kind, JobEventKind::OfferRejected { .. })));
+    }
 }
 
 impl Engine {
@@ -649,4 +725,17 @@ fn haversine_km(a: Coordinates, b: Coordinates) -> f64 {
         + a_lat.cos() * b_lat.cos() * (d_lon / 2.0).sin().powi(2);
 
     2.0 * earth_radius_km * s.sqrt().asin()
+}
+
+fn event_filter_kind(kind: &JobEventKind) -> JobEventFilterKind {
+    match kind {
+        JobEventKind::JobRegistered => JobEventFilterKind::JobRegistered,
+        JobEventKind::OfferCreated { .. } => JobEventFilterKind::OfferCreated,
+        JobEventKind::OfferExpired { .. } => JobEventFilterKind::OfferExpired,
+        JobEventKind::OfferCancelled { .. } => JobEventFilterKind::OfferCancelled,
+        JobEventKind::OfferRejected { .. } => JobEventFilterKind::OfferRejected,
+        JobEventKind::OfferAccepted { .. } => JobEventFilterKind::OfferAccepted,
+        JobEventKind::MatchConfirmed { .. } => JobEventFilterKind::MatchConfirmed,
+        JobEventKind::OfferStatusUpdated { .. } => JobEventFilterKind::OfferStatusUpdated,
+    }
 }

@@ -1,6 +1,7 @@
 use spatiad_core::Engine;
 use spatiad_core::CancelledDriverOffer;
 use spatiad_core::JobDispatchState;
+use spatiad_core::JobEventFilterKind;
 use spatiad_core::JobEventRecord;
 use spatiad_core::PendingDriverOffer;
 use spatiad_types::{JobRequest, MatchResult, OfferRecord};
@@ -84,6 +85,17 @@ impl DispatchService {
         before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Vec<JobEventRecord> {
         self.engine.job_events_before(job_id, limit, before)
+    }
+
+    pub fn job_events_before_filtered(
+        &self,
+        job_id: Uuid,
+        limit: usize,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+        kinds: Option<&[JobEventFilterKind]>,
+    ) -> Vec<JobEventRecord> {
+        self.engine
+            .job_events_before_filtered(job_id, limit, before, kinds)
     }
 
     pub fn handle_offer_response(

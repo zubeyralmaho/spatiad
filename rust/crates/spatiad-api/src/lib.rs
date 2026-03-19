@@ -13,7 +13,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use spatiad_core::{JobDispatchState, JobEventKind, JobEventRecord};
+use spatiad_core::{JobDispatchState, JobEventFilterKind, JobEventKind, JobEventRecord};
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult, OfferStatus};
 use spatiad_ws::{DriverInbound, DriverOutbound};
@@ -69,6 +69,7 @@ pub struct JobStatusResponse {
 pub struct JobEventsQuery {
     pub limit: Option<usize>,
     pub before: Option<String>,
+    pub kinds: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +77,12 @@ pub struct JobEventsResponse {
     pub job_id: Uuid,
     pub events: Vec<JobEventResponse>,
     pub next_before_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiErrorResponse {
+    pub error: &'static str,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,7 +217,7 @@ async fn dispatch_job_events(
     State(state): State<ApiState>,
     Path(job_id): Path<Uuid>,
     Query(query): Query<JobEventsQuery>,
-) -> Json<JobEventsResponse> {
+) -> Result<Json<JobEventsResponse>, (StatusCode, Json<ApiErrorResponse>)> {
     let dispatch = state.dispatch.lock().await;
     let limit = query.limit.unwrap_or(50);
 
@@ -220,8 +227,18 @@ async fn dispatch_job_events(
         .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
         .map(|value| value.with_timezone(&Utc));
 
+    let kinds = parse_job_event_kinds(query.kinds.as_deref()).map_err(|message| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_query",
+                message,
+            }),
+        )
+    })?;
+
     let events = dispatch
-        .job_events_before(job_id, limit, before)
+        .job_events_before_filtered(job_id, limit, before, kinds.as_deref())
         .into_iter()
         .map(map_job_event)
         .collect::<Vec<_>>();
@@ -232,11 +249,11 @@ async fn dispatch_job_events(
         None
     };
 
-    Json(JobEventsResponse {
+    Ok(Json(JobEventsResponse {
         job_id,
         events,
         next_before_cursor,
-    })
+    }))
 }
 
 async fn driver_ws(
@@ -603,6 +620,47 @@ fn offer_status_label(status: OfferStatus) -> &'static str {
         OfferStatus::Rejected => "rejected",
         OfferStatus::Expired => "expired",
         OfferStatus::Cancelled => "cancelled",
+    }
+}
+
+fn parse_job_event_kinds(raw: Option<&str>) -> Result<Option<Vec<JobEventFilterKind>>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let mut parsed = Vec::new();
+    for part in raw.split(',') {
+        let token = part.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        let kind = match token {
+            "job_registered" => JobEventFilterKind::JobRegistered,
+            "offer_created" => JobEventFilterKind::OfferCreated,
+            "offer_expired" => JobEventFilterKind::OfferExpired,
+            "offer_cancelled" => JobEventFilterKind::OfferCancelled,
+            "offer_rejected" => JobEventFilterKind::OfferRejected,
+            "offer_accepted" => JobEventFilterKind::OfferAccepted,
+            "match_confirmed" => JobEventFilterKind::MatchConfirmed,
+            "offer_status_updated" => JobEventFilterKind::OfferStatusUpdated,
+            other => {
+                return Err(format!(
+                    "unsupported event kind '{}' in 'kinds' query parameter",
+                    other
+                ));
+            }
+        };
+
+        if !parsed.contains(&kind) {
+            parsed.push(kind);
+        }
+    }
+
+    if parsed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(parsed))
     }
 }
 
