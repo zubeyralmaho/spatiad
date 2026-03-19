@@ -21,6 +21,12 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
 use uuid::Uuid;
 
+mod validation;
+use validation::{
+    validate_category, validate_coordinates, validate_radius,
+    validate_timeout_seconds,
+};
+
 #[derive(Clone)]
 pub struct ApiState {
     pub dispatch: Arc<Mutex<DispatchService>>,
@@ -209,6 +215,64 @@ async fn dispatch_offer(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
+    // Validate inputs
+    if let Err(e) = validate_category(&payload.category) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_category",
+                message: e.message(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = validate_radius(payload.initial_radius_km, payload.max_radius_km) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_radius",
+                message: e.message(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = validate_coordinates(&payload.pickup) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_coordinates",
+                message: e.message(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Some(dropoff) = &payload.dropoff {
+        if let Err(e) = validate_coordinates(dropoff) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiErrorResponse {
+                    error: "invalid_coordinates",
+                    message: e.message(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    if let Err(e) = validate_timeout_seconds(payload.timeout_seconds) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_timeout",
+                message: e.message(),
+            }),
+        )
+            .into_response();
+    }
+
     if !allow_dispatch_request(&state, &headers, "dispatch_offer").await {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -244,11 +308,34 @@ async fn upsert_driver(
     Json(payload): Json<DriverUpsertRequest>,
 ) -> impl IntoResponse {
     if !is_dispatcher_authorized(&state, &headers) {
-        return StatusCode::UNAUTHORIZED;
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    // Validate inputs
+    if let Err(e) = validate_category(&payload.category) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_category",
+                message: e.message(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = validate_coordinates(&payload.position) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_coordinates",
+                message: e.message(),
+            }),
+        )
+            .into_response();
     }
 
     if !allow_dispatch_request(&state, &headers, "driver_upsert").await {
-        return StatusCode::TOO_MANY_REQUESTS;
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
 
     let mut dispatch = state.dispatch.lock().await;
@@ -259,7 +346,7 @@ async fn upsert_driver(
         payload.status,
     );
 
-    axum::http::StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn cancel_offer(
@@ -732,12 +819,17 @@ async fn handle_driver_message(
                         notify_competing_cancellations(state, result.job_id).await;
 
                         if let Some(webhook_url) = &state.webhook_url {
-                            let _ = send_match_webhook(
+                            let webhook_result = send_match_webhook(
                                 webhook_url,
                                 state.webhook_secret.as_deref(),
                                 &result,
                             )
                             .await;
+
+                            if webhook_result.is_err() {
+                                let mut dispatch = state.dispatch.lock().await;
+                                dispatch.record_webhook_delivery_failed(result.job_id, result.offer_id);
+                            }
                         }
                     }
 
@@ -931,6 +1023,13 @@ fn map_job_event(event: JobEventRecord) -> JobEventResponse {
             driver_id: None,
             status: Some("cancelled"),
         },
+        JobEventKind::WebhookDeliveryFailed { offer_id } => JobEventResponse {
+            at,
+            kind: "webhook_delivery_failed",
+            offer_id: Some(offer_id),
+            driver_id: None,
+            status: Some("webhook_delivery_failed"),
+        },
         JobEventKind::OfferCreated { offer_id, driver_id } => JobEventResponse {
             at,
             kind: "offer_created",
@@ -1031,6 +1130,7 @@ fn parse_job_event_kinds(raw: Option<&str>) -> Result<Option<Vec<JobEventFilterK
         let kind = match token {
             "job_registered" => JobEventFilterKind::JobRegistered,
             "job_cancelled" => JobEventFilterKind::JobCancelled,
+            "webhook_delivery_failed" => JobEventFilterKind::WebhookDeliveryFailed,
             "offer_created" => JobEventFilterKind::OfferCreated,
             "offer_expired" => JobEventFilterKind::OfferExpired,
             "offer_cancelled" => JobEventFilterKind::OfferCancelled,
