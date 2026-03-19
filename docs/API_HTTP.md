@@ -153,6 +153,7 @@ Pagination:
 Validation:
 
 - If `kinds` contains an unsupported value, endpoint returns `400 Bad Request` with:
+- If `before` is not a valid RFC3339 timestamp, endpoint returns `400 Bad Request` with `error=invalid_query`.
 
 ```json
 {

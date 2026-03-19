@@ -218,14 +218,25 @@ async fn dispatch_job_events(
     Path(job_id): Path<Uuid>,
     Query(query): Query<JobEventsQuery>,
 ) -> Result<Json<JobEventsResponse>, (StatusCode, Json<ApiErrorResponse>)> {
-    let dispatch = state.dispatch.lock().await;
     let limit = query.limit.unwrap_or(50);
 
-    let before = query
-        .before
-        .as_deref()
-        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
-        .map(|value| value.with_timezone(&Utc));
+    let before = match query.before.as_deref() {
+        Some(raw) => Some(
+            chrono::DateTime::parse_from_rfc3339(raw)
+                .map(|value| value.with_timezone(&Utc))
+                .map_err(|_| {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ApiErrorResponse {
+                            error: "invalid_query",
+                            message: "invalid 'before' cursor; expected RFC3339 timestamp"
+                                .to_string(),
+                        }),
+                    )
+                })?,
+        ),
+        None => None,
+    };
 
     let kinds = parse_job_event_kinds(query.kinds.as_deref()).map_err(|message| {
         (
@@ -236,6 +247,8 @@ async fn dispatch_job_events(
             }),
         )
     })?;
+
+    let dispatch = state.dispatch.lock().await;
 
     let events = dispatch
         .job_events_before_filtered(job_id, limit, before, kinds.as_deref())
@@ -756,6 +769,32 @@ mod tests {
             .1
             .message
             .contains("unsupported event kind 'unknown_event'"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_rejects_invalid_before_cursor() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let state = seeded_api_state(job_id, driver_id);
+
+        let error = dispatch_job_events(
+            State(state),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: Some("invalid-timestamp".to_string()),
+                kinds: None,
+            }),
+        )
+        .await
+        .expect_err("invalid cursor should fail");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1.error, "invalid_query");
+        assert!(error
+            .1
+            .message
+            .contains("invalid 'before' cursor"));
     }
 
     fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {
