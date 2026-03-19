@@ -1,0 +1,12 @@
+# Default owners
+* @zubeyralmaho
+
+# Rust engine
+/rust/ @zubeyralmaho
+
+# TypeScript workspace
+/typescript/ @zubeyralmaho
+
+# Docs and governance
+/docs/ @zubeyralmaho
+/.github/ @zubeyralmaho

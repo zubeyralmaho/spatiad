@@ -1,0 +1,24 @@
+name: PR Label Guard
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited]
+
+jobs:
+  validate-labels:
+    name: Validate Required Labels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure at least one required label exists
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const required = ["feat", "fix", "docs", "chore", "refactor", "test"];
+            const labels = (context.payload.pull_request.labels || []).map(l => l.name);
+            const hasRequired = labels.some(l => required.includes(l));
+
+            if (!hasRequired) {
+              core.setFailed(
+                `Missing required label. Add one of: ${required.join(", ")}. Current labels: ${labels.join(", ") || "none"}`
+              );
+            }

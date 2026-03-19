@@ -15,6 +15,7 @@ Describe what changed and why.
 
 - [ ] Branch name follows `feat/*`, `fix/*`, `docs/*`, or `chore/*`
 - [ ] Commit messages follow Conventional Commits
+- [ ] PR has at least one required label (`feat`, `fix`, `docs`, `chore`, `refactor`, `test`)
 - [ ] Documentation updated (if behavior changed)
 - [ ] `cargo check` passes in `rust/`
 - [ ] `pnpm -r build` passes in `typescript/`

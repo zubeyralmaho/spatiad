@@ -44,7 +44,17 @@ Examples:
 1. Rebase branch onto `main`.
 2. Keep PR focused to one concern.
 3. Fill the PR template fully.
-4. Ensure CI passes before requesting review.
+4. Add at least one required PR label: `feat`, `fix`, `docs`, `chore`, `refactor`, or `test`.
+5. Ensure CI passes before requesting review.
+
+## CODEOWNERS
+
+Path ownership is enforced through `.github/CODEOWNERS`.
+Any PR touching owned paths requires review by listed owners when code-owner review is enabled.
+
+## Releases
+
+Tagging a commit with `vX.Y.Z` triggers the release workflow and publishes release binaries for Linux and macOS.
 
 ## Local validation
 
