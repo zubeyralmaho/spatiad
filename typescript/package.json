@@ -8,7 +8,7 @@
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
     "prepare": "husky",
-    "commitlint": "commitlint --edit"
+    "commitlint": "commitlint"
   },
   "devDependencies": {
     "@types/node": "^22.10.6",
