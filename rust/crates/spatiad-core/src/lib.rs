@@ -12,8 +12,6 @@ use uuid::Uuid;
 pub enum CoreError {
     #[error("offer not found")]
     OfferNotFound,
-    #[error("job not found for offer")]
-    JobNotFound,
     #[error("offer is not pending")]
     OfferNotPending,
     #[error("offer is expired")]
@@ -160,32 +158,46 @@ impl Engine {
         offer_id: Uuid,
         accepted: bool,
     ) -> Result<Option<MatchResult>, CoreError> {
-        let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
-        if offer.status != OfferStatus::Pending {
-            return Err(CoreError::OfferNotPending);
+        let (job_id, driver_id, selected_offer_id) = {
+            let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
+            if offer.status != OfferStatus::Pending {
+                return Err(CoreError::OfferNotPending);
+            }
+            if offer.expires_at <= Utc::now() {
+                offer.status = OfferStatus::Expired;
+                return Err(CoreError::OfferExpired);
+            }
+
+            if accepted {
+                offer.status = OfferStatus::Accepted;
+            } else {
+                offer.status = OfferStatus::Rejected;
+                return Ok(None);
+            }
+
+            (offer.job_id, offer.driver_id, offer.offer_id)
+        };
+
+        // Ensure there is only one winner for a job by cancelling competing pending offers.
+        for other_offer in self.offers.values_mut() {
+            if other_offer.job_id == job_id
+                && other_offer.offer_id != selected_offer_id
+                && other_offer.status == OfferStatus::Pending
+            {
+                other_offer.status = OfferStatus::Cancelled;
+            }
         }
-        if offer.expires_at <= Utc::now() {
-            offer.status = OfferStatus::Expired;
-            return Err(CoreError::OfferExpired);
+
+        if let Some(driver) = self.drivers.get_mut(&driver_id) {
+            driver.status = DriverStatus::Busy;
         }
 
-        if accepted {
-            offer.status = OfferStatus::Accepted;
-
-            let job_id = offer.job_id;
-            let driver_id = offer.driver_id;
-            let offer_id = offer.offer_id;
-
-            return Ok(Some(MatchResult {
-                job_id,
-                driver_id,
-                offer_id,
-                matched_at: Utc::now(),
-            }));
-        }
-
-        offer.status = OfferStatus::Rejected;
-        Ok(None)
+        Ok(Some(MatchResult {
+            job_id,
+            driver_id,
+            offer_id: selected_offer_id,
+            matched_at: Utc::now(),
+        }))
     }
 }
 
@@ -234,6 +246,65 @@ mod tests {
         let expired = engine.expire_pending_offers_for_driver(driver_id);
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0], offer.offer_id);
+    }
+
+    #[test]
+    fn accepted_offer_cancels_other_pending_offers_for_same_job() {
+        let mut engine = Engine::new(8);
+        let driver_a = Uuid::new_v4();
+        let driver_b = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        for driver_id in [driver_a, driver_b] {
+            engine.upsert_driver_location(
+                driver_id,
+                "tow_truck".to_string(),
+                Coordinates {
+                    latitude: 38.433,
+                    longitude: 26.768,
+                },
+                DriverStatus::Available,
+            );
+        }
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let accepted_offer = engine.create_offer(job_id, driver_a, 30);
+        let cancelled_offer = engine.create_offer(job_id, driver_b, 30);
+
+        let result = engine
+            .handle_offer_response(accepted_offer.offer_id, true)
+            .expect("offer response should succeed")
+            .expect("accepted offer should produce match result");
+
+        assert_eq!(result.job_id, job_id);
+        assert_eq!(result.driver_id, driver_a);
+
+        let accepted_status = engine
+            .offers
+            .get(&accepted_offer.offer_id)
+            .map(|offer| offer.status.clone())
+            .expect("accepted offer exists");
+        let cancelled_status = engine
+            .offers
+            .get(&cancelled_offer.offer_id)
+            .map(|offer| offer.status.clone())
+            .expect("competing offer exists");
+
+        assert_eq!(accepted_status, OfferStatus::Accepted);
+        assert_eq!(cancelled_status, OfferStatus::Cancelled);
     }
 }
 

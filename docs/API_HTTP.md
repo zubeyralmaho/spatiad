@@ -57,6 +57,7 @@ Behavior notes:
 - Candidate search starts at `initial_radius_km`.
 - If no candidate is found, search radius expands in +2 km steps until `max_radius_km`.
 - Engine selects the nearest available driver in the current search radius.
+- On first successful acceptance, that job is locked to a single winner and competing pending offers are cancelled.
 
 Webhook notes:
 
