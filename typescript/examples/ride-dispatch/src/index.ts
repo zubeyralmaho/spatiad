@@ -50,7 +50,11 @@ const run = async () => {
     jobId: "33333333-3333-3333-3333-333333333333",
     limit: 10,
     maxPages: 5,
-    kinds: ["offer_created", "match_confirmed"]
+    maxEvents: 100,
+    kinds: ["offer_created", "match_confirmed"],
+    onPage: (page, index) => {
+      console.log("page fetched", index, page.events.length, page.next_before_cursor);
+    }
   });
 
   console.log("all filtered events", allFilteredEvents.length);

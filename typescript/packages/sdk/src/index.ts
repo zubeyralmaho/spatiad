@@ -32,6 +32,8 @@ export type GetJobEventsRequest = {
 
 export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & {
   maxPages?: number;
+  maxEvents?: number;
+  onPage?: (page: JobEventsResponse, pageIndex: number) => void;
 };
 
 export type JobEvent = {
@@ -86,6 +88,7 @@ export class SpatiadClient {
 
   async getJobEventsAllPages(request: GetJobEventsAllPagesRequest): Promise<JobEvent[]> {
     const maxPages = request.maxPages ?? 10;
+    const maxEvents = request.maxEvents;
     if (maxPages < 1) {
       return [];
     }
@@ -101,7 +104,13 @@ export class SpatiadClient {
         kinds: request.kinds
       });
 
+      request.onPage?.(current, page);
+
       allEvents.push(...current.events);
+      if (typeof maxEvents === "number" && maxEvents >= 0 && allEvents.length >= maxEvents) {
+        return allEvents.slice(0, maxEvents);
+      }
+
       if (!current.next_before_cursor) {
         break;
       }

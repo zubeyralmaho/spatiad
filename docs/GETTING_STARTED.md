@@ -44,3 +44,24 @@ cd typescript
 pnpm install
 pnpm -r build
 ```
+
+## SDK job events pagination
+
+```ts
+import { SpatiadClient } from "@spatiad/sdk";
+
+const client = new SpatiadClient("http://localhost:3000");
+
+const events = await client.getJobEventsAllPages({
+  jobId: "22222222-2222-2222-2222-222222222222",
+  limit: 25,
+  maxPages: 10,
+  maxEvents: 200,
+  kinds: ["offer_created", "match_confirmed"],
+  onPage: (page, index) => {
+    console.log("fetched page", index, page.events.length);
+  }
+});
+
+console.log(events.length);
+```
