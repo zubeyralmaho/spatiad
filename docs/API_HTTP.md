@@ -63,6 +63,9 @@ Webhook notes:
 
 - If `SPATIAD_WEBHOOK_URL` is set, an outbound callback is sent after a successful driver acceptance.
 - Delivery retry policy (current): up to 3 attempts with exponential backoff (200ms, 400ms, 800ms).
+- Each webhook request includes `x-spatiad-timestamp` and `x-spatiad-nonce` headers.
+- If `SPATIAD_WEBHOOK_SECRET` is configured, request includes `x-spatiad-signature` (hex HMAC-SHA256).
+- Signature base string format: `<timestamp>.<nonce>.<raw_json_body>`.
 - Callback payload:
 
 ```json

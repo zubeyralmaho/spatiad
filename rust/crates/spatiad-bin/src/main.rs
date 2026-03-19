@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let state = ApiState {
         dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
         webhook_url: std::env::var("SPATIAD_WEBHOOK_URL").ok(),
+        webhook_secret: std::env::var("SPATIAD_WEBHOOK_SECRET").ok(),
         driver_token: std::env::var("SPATIAD_DRIVER_TOKEN").ok(),
         sessions: Arc::new(Mutex::new(HashMap::new())),
     };

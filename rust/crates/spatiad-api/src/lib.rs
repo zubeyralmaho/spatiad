@@ -10,7 +10,9 @@ use axum::{
 };
 use axum::extract::ws::WebSocket;
 use chrono::Utc;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult};
 use spatiad_ws::{DriverInbound, DriverOutbound};
@@ -22,6 +24,7 @@ use uuid::Uuid;
 pub struct ApiState {
     pub dispatch: Arc<Mutex<DispatchService>>,
     pub webhook_url: Option<String>,
+    pub webhook_secret: Option<String>,
     pub driver_token: Option<String>,
     pub sessions: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<DriverOutbound>>>>,
 }
@@ -301,7 +304,12 @@ async fn handle_driver_message(
                         notify_competing_cancellations(state, result.job_id).await;
 
                         if let Some(webhook_url) = &state.webhook_url {
-                            let _ = send_match_webhook(webhook_url, &result).await;
+                            let _ = send_match_webhook(
+                                webhook_url,
+                                state.webhook_secret.as_deref(),
+                                &result,
+                            )
+                            .await;
                         }
                     }
 
@@ -352,7 +360,11 @@ struct MatchWebhookPayload {
     matched_at: chrono::DateTime<Utc>,
 }
 
-async fn send_match_webhook(webhook_url: &str, result: &MatchResult) -> Result<(), ()> {
+async fn send_match_webhook(
+    webhook_url: &str,
+    webhook_secret: Option<&str>,
+    result: &MatchResult,
+) -> Result<(), ()> {
     let payload = MatchWebhookPayload {
         event: "trip_matched",
         job_id: result.job_id,
@@ -361,15 +373,27 @@ async fn send_match_webhook(webhook_url: &str, result: &MatchResult) -> Result<(
         matched_at: result.matched_at,
     };
 
+    let body = serde_json::to_string(&payload).map_err(|_| ())?;
+    let timestamp = Utc::now().timestamp().to_string();
+    let nonce = Uuid::new_v4().to_string();
+
     let client = reqwest::Client::new();
     let mut backoff = Duration::from_millis(200);
 
     for attempt in 1..=3 {
-        let response = client
+        let mut request = client
             .post(webhook_url)
-            .json(&payload)
-            .send()
-            .await;
+            .header("content-type", "application/json")
+            .header("x-spatiad-timestamp", &timestamp)
+            .header("x-spatiad-nonce", &nonce)
+            .body(body.clone());
+
+        if let Some(secret) = webhook_secret {
+            let signature = sign_webhook(secret, &timestamp, &nonce, &body).map_err(|_| ())?;
+            request = request.header("x-spatiad-signature", signature);
+        }
+
+        let response = request.send().await;
 
         match response {
             Ok(resp) if resp.status().is_success() => return Ok(()),
@@ -382,4 +406,33 @@ async fn send_match_webhook(webhook_url: &str, result: &MatchResult) -> Result<(
     }
 
     Err(())
+}
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn sign_webhook(secret: &str, timestamp: &str, nonce: &str, body: &str) -> Result<String, ()> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| ())?;
+    mac.update(timestamp.as_bytes());
+    mac.update(b".");
+    mac.update(nonce.as_bytes());
+    mac.update(b".");
+    mac.update(body.as_bytes());
+    let bytes = mac.finalize().into_bytes();
+    Ok(hex::encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sign_webhook;
+
+    #[test]
+    fn webhook_signature_is_deterministic_for_same_input() {
+        let signature_a = sign_webhook("secret", "1710000000", "nonce-1", "{\"k\":1}")
+            .expect("signature should be generated");
+        let signature_b = sign_webhook("secret", "1710000000", "nonce-1", "{\"k\":1}")
+            .expect("signature should be generated");
+
+        assert_eq!(signature_a, signature_b);
+        assert_eq!(signature_a.len(), 64);
+    }
 }

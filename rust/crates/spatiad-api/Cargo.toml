@@ -7,9 +7,12 @@ license.workspace = true
 [dependencies]
 axum.workspace = true
 chrono.workspace = true
+hmac.workspace = true
+hex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 spatiad-dispatch = { path = "../spatiad-dispatch" }
 spatiad-types = { path = "../spatiad-types" }
 spatiad-ws = { path = "../spatiad-ws" }

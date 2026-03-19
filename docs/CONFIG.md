@@ -12,6 +12,7 @@
 ## Current implemented config
 
 - `SPATIAD_WEBHOOK_URL`: when set, spatiad sends `trip_matched` callbacks after offer acceptance.
+- `SPATIAD_WEBHOOK_SECRET`: when set, spatiad signs webhook requests with HMAC-SHA256.
 - `SPATIAD_DRIVER_TOKEN`: when set, driver WS upgrade requires header `x-spatiad-driver-token`.
 
 ## Current scaffold behavior
