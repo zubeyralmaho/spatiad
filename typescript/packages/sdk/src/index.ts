@@ -10,6 +10,13 @@ export type RetryOptions = {
   retryOnStatuses?: number[];
 };
 
+export type DispatcherAuthMode = "bearer" | "header";
+
+export type SpatiadClientOptions = {
+  dispatcherToken?: string;
+  dispatcherAuthMode?: DispatcherAuthMode;
+};
+
 export type ApiErrorBody = {
   error?: string;
   message?: string;
@@ -86,12 +93,15 @@ export class SpatiadApiError extends Error {
 }
 
 export class SpatiadClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly options: SpatiadClientOptions = {}
+  ) {}
 
   async createOffer(request: DispatchOfferRequest): Promise<{ offer_id: string }> {
     const response = await this.fetchWithRetry(`${this.baseUrl}/api/v1/dispatch/offer`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: this.withDispatcherHeaders({ "content-type": "application/json" }),
       signal: request.signal,
       body: JSON.stringify({
         job_id: request.jobId,
@@ -116,7 +126,11 @@ export class SpatiadClient {
 
     const response = await this.fetchWithRetry(
       url,
-      { method: "GET", signal: request.signal },
+      {
+        method: "GET",
+        headers: this.withDispatcherHeaders(),
+        signal: request.signal
+      },
       request.retry
     );
     if (!response.ok) {
@@ -185,6 +199,22 @@ export class SpatiadClient {
 
     const suffix = search.toString();
     return `${this.baseUrl}/api/v1/dispatch/job/${request.jobId}/events${suffix ? `?${suffix}` : ""}`;
+  }
+
+  private withDispatcherHeaders(base: Record<string, string> = {}): Record<string, string> {
+    const headers = { ...base };
+    const token = this.options.dispatcherToken;
+    if (!token) {
+      return headers;
+    }
+
+    if ((this.options.dispatcherAuthMode ?? "bearer") === "header") {
+      headers["x-spatiad-dispatcher-token"] = token;
+    } else {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    return headers;
   }
 
   private async fetchWithRetry(

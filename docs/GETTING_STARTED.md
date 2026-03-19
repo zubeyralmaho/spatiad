@@ -50,7 +50,10 @@ pnpm -r build
 ```ts
 import { SpatiadApiError, SpatiadClient } from "@spatiad/sdk";
 
-const client = new SpatiadClient("http://localhost:3000");
+const client = new SpatiadClient("http://localhost:3000", {
+  dispatcherToken: process.env.SPATIAD_DISPATCHER_TOKEN,
+  dispatcherAuthMode: "bearer"
+});
 const controller = new AbortController();
 setTimeout(() => controller.abort(), 5000);
 

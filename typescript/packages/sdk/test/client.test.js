@@ -249,3 +249,63 @@ test("getJobEvents marks transient statuses as retryable", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("createOffer sends dispatcher bearer token when configured", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedHeaders;
+
+  globalThis.fetch = async (_url, init) => {
+    observedHeaders = init?.headers;
+    return makeJsonResponse(202, { offer_id: "offer-auth" });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000", {
+      dispatcherToken: "dispatcher-secret"
+    });
+
+    const result = await client.createOffer({
+      jobId: "job-auth-1",
+      category: "tow_truck",
+      pickup: { latitude: 38.433, longitude: 26.768 },
+      dropoff: { latitude: 38.44, longitude: 26.78 },
+      initialRadiusKm: 1,
+      maxRadiusKm: 5,
+      timeoutSeconds: 20
+    });
+
+    assert.equal(result.offer_id, "offer-auth");
+    assert.equal(observedHeaders.Authorization, "Bearer dispatcher-secret");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getJobEvents sends dispatcher header token in header mode", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedHeaders;
+
+  globalThis.fetch = async (_url, init) => {
+    observedHeaders = init?.headers;
+    return makeJsonResponse(200, {
+      job_id: "job-auth-2",
+      events: [],
+      next_cursor: null,
+      next_before_cursor: null
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000", {
+      dispatcherToken: "dispatcher-secret",
+      dispatcherAuthMode: "header"
+    });
+
+    await client.getJobEvents({ jobId: "job-auth-2" });
+
+    assert.equal(observedHeaders["x-spatiad-dispatcher-token"], "dispatcher-secret");
+    assert.equal(observedHeaders.Authorization, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
