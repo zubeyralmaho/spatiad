@@ -13,7 +13,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use spatiad_core::{JobDispatchState, JobEventFilterKind, JobEventKind, JobEventRecord};
+use spatiad_core::{JobDispatchState, JobEventFilterKind, JobEventKind, JobEventRecord, JobEventsCursor};
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult, OfferStatus};
 use spatiad_ws::{DriverInbound, DriverOutbound};
@@ -69,6 +69,7 @@ pub struct JobStatusResponse {
 pub struct JobEventsQuery {
     pub limit: Option<usize>,
     pub before: Option<String>,
+    pub cursor: Option<String>,
     pub kinds: Option<String>,
 }
 
@@ -77,6 +78,7 @@ pub struct JobEventsResponse {
     pub job_id: Uuid,
     pub events: Vec<JobEventResponse>,
     pub next_before_cursor: Option<String>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +222,16 @@ async fn dispatch_job_events(
 ) -> Result<Json<JobEventsResponse>, (StatusCode, Json<ApiErrorResponse>)> {
     let limit = query.limit.unwrap_or(50);
 
+    if query.before.is_some() && query.cursor.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiErrorResponse {
+                error: "invalid_query",
+                message: "use either 'before' or 'cursor', not both".to_string(),
+            }),
+        ));
+    }
+
     let before = match query.before.as_deref() {
         Some(raw) => Some(
             chrono::DateTime::parse_from_rfc3339(raw)
@@ -238,6 +250,19 @@ async fn dispatch_job_events(
         None => None,
     };
 
+    let cursor = match query.cursor.as_deref() {
+        Some(raw) => Some(parse_events_cursor(raw).map_err(|message| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ApiErrorResponse {
+                    error: "invalid_query",
+                    message,
+                }),
+            )
+        })?),
+        None => None,
+    };
+
     let kinds = parse_job_event_kinds(query.kinds.as_deref()).map_err(|message| {
         (
             StatusCode::BAD_REQUEST,
@@ -250,22 +275,34 @@ async fn dispatch_job_events(
 
     let dispatch = state.dispatch.lock().await;
 
-    let events = dispatch
-        .job_events_before_filtered(job_id, limit, before, kinds.as_deref())
-        .into_iter()
-        .map(map_job_event)
-        .collect::<Vec<_>>();
+    let event_records = if cursor.is_some() {
+        dispatch.job_events_cursor_filtered(job_id, limit, cursor, kinds.as_deref())
+    } else {
+        dispatch.job_events_before_filtered(job_id, limit, before, kinds.as_deref())
+    };
 
-    let next_before_cursor = if events.len() >= limit.max(1) {
-        events.last().map(|event| event.at.to_rfc3339())
+    let next_before_cursor = if event_records.len() >= limit.max(1) {
+        event_records.last().map(|event| event.occurred_at.to_rfc3339())
     } else {
         None
     };
+
+    let next_cursor = if event_records.len() >= limit.max(1) {
+        event_records.last().map(encode_events_cursor)
+    } else {
+        None
+    };
+
+    let events = event_records
+        .into_iter()
+        .map(map_job_event)
+        .collect::<Vec<_>>();
 
     Ok(Json(JobEventsResponse {
         job_id,
         events,
         next_before_cursor,
+        next_cursor,
     }))
 }
 
@@ -636,6 +673,29 @@ fn offer_status_label(status: OfferStatus) -> &'static str {
     }
 }
 
+fn encode_events_cursor(event: &JobEventRecord) -> String {
+    format!("{}|{}", event.occurred_at.to_rfc3339(), event.sequence)
+}
+
+fn parse_events_cursor(raw: &str) -> Result<JobEventsCursor, String> {
+    let (timestamp, sequence) = raw.rsplit_once('|').ok_or_else(|| {
+        "invalid 'cursor' format; expected '<rfc3339>|<sequence>'".to_string()
+    })?;
+
+    let occurred_at = chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map_err(|_| "invalid cursor timestamp; expected RFC3339".to_string())?
+        .with_timezone(&Utc);
+
+    let sequence = sequence
+        .parse::<u64>()
+        .map_err(|_| "invalid cursor sequence; expected unsigned integer".to_string())?;
+
+    Ok(JobEventsCursor {
+        occurred_at,
+        sequence,
+    })
+}
+
 fn parse_job_event_kinds(raw: Option<&str>) -> Result<Option<Vec<JobEventFilterKind>>, String> {
     let Some(raw) = raw else {
         return Ok(None);
@@ -714,6 +774,7 @@ mod tests {
             Query(JobEventsQuery {
                 limit: Some(1),
                 before: None,
+                cursor: None,
                 kinds: Some("offer_created,offer_rejected".to_string()),
             }),
         )
@@ -723,17 +784,17 @@ mod tests {
 
         assert_eq!(first_page.events.len(), 1);
         assert_eq!(first_page.events[0].kind, "offer_rejected");
+        assert!(first_page.next_cursor.is_some());
 
-        let before = first_page
-            .next_before_cursor
-            .expect("first page should expose cursor");
+        let cursor = first_page.next_cursor.expect("first page should expose cursor");
 
         let second_page = dispatch_job_events(
             State(state),
             Path(job_id),
             Query(JobEventsQuery {
                 limit: Some(1),
-                before: Some(before),
+                before: None,
+                cursor: Some(cursor),
                 kinds: Some("offer_created,offer_rejected".to_string()),
             }),
         )
@@ -757,6 +818,7 @@ mod tests {
             Query(JobEventsQuery {
                 limit: Some(10),
                 before: None,
+                cursor: None,
                 kinds: Some("offer_created,unknown_event".to_string()),
             }),
         )
@@ -783,6 +845,7 @@ mod tests {
             Query(JobEventsQuery {
                 limit: Some(10),
                 before: Some("invalid-timestamp".to_string()),
+                cursor: None,
                 kinds: None,
             }),
         )
@@ -795,6 +858,30 @@ mod tests {
             .1
             .message
             .contains("invalid 'before' cursor"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_rejects_invalid_cursor_format() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let state = seeded_api_state(job_id, driver_id);
+
+        let error = dispatch_job_events(
+            State(state),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: None,
+                cursor: Some("bad-cursor".to_string()),
+                kinds: None,
+            }),
+        )
+        .await
+        .expect_err("invalid cursor should fail");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1.error, "invalid_query");
+        assert!(error.1.message.contains("invalid 'cursor' format"));
     }
 
     fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {

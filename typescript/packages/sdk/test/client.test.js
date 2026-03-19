@@ -22,6 +22,7 @@ test("getJobEventsAllPages follows cursor pagination", async () => {
       return makeJsonResponse(200, {
         job_id: "job-1",
         events: [{ at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" }],
+        next_cursor: "2026-03-20T09:59:59Z|10",
         next_before_cursor: "2026-03-20T09:59:59Z"
       });
     }
@@ -29,6 +30,7 @@ test("getJobEventsAllPages follows cursor pagination", async () => {
     return makeJsonResponse(200, {
       job_id: "job-1",
       events: [{ at: "2026-03-20T09:59:00Z", kind: "match_confirmed", offer_id: "o1", driver_id: "d1", status: "matched" }],
+      next_cursor: null,
       next_before_cursor: null
     });
   };
@@ -44,7 +46,7 @@ test("getJobEventsAllPages follows cursor pagination", async () => {
     assert.equal(calls.length, 2);
     assert.match(calls[0], /limit=1/);
     assert.match(calls[0], /kinds=offer_created%2Cmatch_confirmed/);
-    assert.match(calls[1], /before=2026-03-20T09%3A59%3A59Z/);
+    assert.match(calls[1], /cursor=2026-03-20T09%3A59%3A59Z%7C10/);
     assert.equal(events.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -63,6 +65,7 @@ test("getJobEventsAllPages respects maxEvents", async () => {
         { at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" },
         { at: "2026-03-20T09:59:00Z", kind: "offer_created", offer_id: "o2", driver_id: "d2", status: "pending" }
       ],
+      next_cursor: "2026-03-20T09:58:00Z|20",
       next_before_cursor: "2026-03-20T09:58:00Z"
     });
   };
@@ -80,6 +83,20 @@ test("getJobEventsAllPages respects maxEvents", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("getJobEvents rejects before and cursor together", async () => {
+  const client = new SpatiadClient("http://localhost:3000");
+
+  await assert.rejects(
+    () =>
+      client.getJobEvents({
+        jobId: "job-2",
+        before: "2026-03-20T09:58:00Z",
+        cursor: "2026-03-20T09:58:00Z|20"
+      }),
+    /either 'before' or 'cursor'/
+  );
 });
 
 test("createOffer retries on configured status", async () => {

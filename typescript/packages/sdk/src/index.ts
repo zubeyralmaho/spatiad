@@ -41,6 +41,7 @@ export type JobEventKind =
 export type GetJobEventsRequest = {
   jobId: string;
   limit?: number;
+  cursor?: string;
   before?: string;
   kinds?: JobEventKind[];
   signal?: AbortSignal;
@@ -64,6 +65,7 @@ export type JobEvent = {
 export type JobEventsResponse = {
   job_id: string;
   events: JobEvent[];
+  next_cursor: string | null;
   next_before_cursor: string | null;
 };
 
@@ -132,13 +134,13 @@ export class SpatiadClient {
     }
 
     const allEvents: JobEvent[] = [];
-    let before: string | undefined;
+    let cursor: string | undefined;
 
     for (let page = 0; page < maxPages; page += 1) {
       const current = await this.getJobEvents({
         jobId: request.jobId,
         limit: request.limit,
-        before,
+        cursor,
         kinds: request.kinds,
         signal: request.signal,
         retry: request.retry
@@ -151,20 +153,28 @@ export class SpatiadClient {
         return allEvents.slice(0, maxEvents);
       }
 
-      if (!current.next_before_cursor) {
+      const nextCursor = current.next_cursor ?? current.next_before_cursor;
+      if (!nextCursor) {
         break;
       }
 
-      before = current.next_before_cursor;
+      cursor = nextCursor;
     }
 
     return allEvents;
   }
 
   private buildJobEventsUrl(request: GetJobEventsRequest): string {
+    if (request.before && request.cursor) {
+      throw new Error("use either 'before' or 'cursor', not both");
+    }
+
     const search = new URLSearchParams();
     if (typeof request.limit === "number") {
       search.set("limit", String(request.limit));
+    }
+    if (request.cursor) {
+      search.set("cursor", request.cursor);
     }
     if (request.before) {
       search.set("before", request.before);

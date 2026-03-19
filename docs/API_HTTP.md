@@ -117,14 +117,15 @@ Possible `state` values:
 - `matched`
 - `exhausted`
 
-## GET /api/v1/dispatch/job/{job_id}/events?limit=50&before=2026-03-20T10:00:00Z&kinds=offer_created,match_confirmed
+## GET /api/v1/dispatch/job/{job_id}/events?limit=50&cursor=2026-03-20T10:00:00Z%7C42&kinds=offer_created,match_confirmed
 
 Returns recent dispatch event history for a job (most recent first).
 
 Query params:
 
 - `limit` (optional): max event count, default 50
-- `before` (optional): RFC3339 timestamp cursor; returns events older than this value
+- `cursor` (optional): opaque pagination cursor in `<rfc3339>|<sequence>` format
+- `before` (optional): RFC3339 timestamp cursor (legacy compatibility mode)
 - `kinds` (optional): comma-separated event kind filter
   - Supported values: `job_registered`, `offer_created`, `offer_expired`, `offer_cancelled`, `offer_rejected`, `offer_accepted`, `match_confirmed`, `offer_status_updated`
 
@@ -133,6 +134,7 @@ Response:
 ```json
 {
   "job_id": "uuid",
+  "next_cursor": "2026-03-20T09:58:11Z|41",
   "next_before_cursor": "2026-03-20T09:58:11Z",
   "events": [
     {
@@ -148,12 +150,15 @@ Response:
 
 Pagination:
 
-- If `next_before_cursor` is non-null, call the same endpoint with `before=<next_before_cursor>` to fetch the next page.
+- Preferred: if `next_cursor` is non-null, call the same endpoint with `cursor=<next_cursor>`.
+- Legacy compatibility: `next_before_cursor` can still be used with `before=<next_before_cursor>`.
 
 Validation:
 
 - If `kinds` contains an unsupported value, endpoint returns `400 Bad Request` with:
 - If `before` is not a valid RFC3339 timestamp, endpoint returns `400 Bad Request` with `error=invalid_query`.
+- If `cursor` format is invalid, endpoint returns `400 Bad Request` with `error=invalid_query`.
+- `before` and `cursor` cannot be sent together.
 
 ```json
 {
