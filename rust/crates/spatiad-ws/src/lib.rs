@@ -1,12 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use spatiad_types::Coordinates;
+use spatiad_types::{Coordinates, DriverStatus};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DriverInbound {
     Location {
+        category: String,
+        status: DriverStatus,
         latitude: f64,
         longitude: f64,
         timestamp: i64,

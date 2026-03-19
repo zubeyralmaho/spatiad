@@ -4,6 +4,10 @@ Endpoint:
 
 - /api/v1/stream/driver/{driver_id}
 
+Authentication:
+
+- If `SPATIAD_DRIVER_TOKEN` is configured, clients must send header `x-spatiad-driver-token` with the same token value during WS upgrade.
+
 Current implementation includes a basic session loop:
 
 - On connect/reconnect, pending offers for that driver are replayed.
@@ -14,7 +18,14 @@ Current implementation includes a basic session loop:
 ## Inbound messages (driver -> spatiad)
 
 ```json
-{ "type": "location", "latitude": 38.433, "longitude": 26.768, "timestamp": 1710000000 }
+{
+  "type": "location",
+  "category": "tow_truck",
+  "status": "Available",
+  "latitude": 38.433,
+  "longitude": 26.768,
+  "timestamp": 1710000000
+}
 ```
 
 ```json
@@ -44,7 +55,7 @@ If another driver accepts the same job first, competing online drivers receive `
 ```json
 { "type": "offer_expired", "offer_id": "uuid" }
 ```
-```
+
 ```json
 { "type": "offer_cancelled", "offer_id": "uuid", "job_id": "uuid" }
 ```

@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     extract::ws::Message,
     extract::{Path, State, WebSocketUpgrade},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -21,6 +22,7 @@ use uuid::Uuid;
 pub struct ApiState {
     pub dispatch: Arc<Mutex<DispatchService>>,
     pub webhook_url: Option<String>,
+    pub driver_token: Option<String>,
     pub sessions: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<DriverOutbound>>>>,
 }
 
@@ -124,12 +126,30 @@ async fn cancel_offer(
 
 async fn driver_ws(
     State(state): State<ApiState>,
-    Path(_driver_id): Path<Uuid>,
+    Path(driver_id): Path<Uuid>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    if !is_driver_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     ws.on_upgrade(move |socket: WebSocket| async move {
-        handle_driver_session(state, _driver_id, socket).await;
+        handle_driver_session(state, driver_id, socket).await;
     })
+    .into_response()
+}
+
+fn is_driver_authorized(state: &ApiState, headers: &HeaderMap) -> bool {
+    let Some(expected) = &state.driver_token else {
+        return true;
+    };
+
+    headers
+        .get("x-spatiad-driver-token")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value == expected)
+        .unwrap_or(false)
 }
 
 async fn handle_driver_session(state: ApiState, driver_id: Uuid, mut socket: WebSocket) {
@@ -246,6 +266,8 @@ async fn handle_driver_message(
             let inbound: DriverInbound = serde_json::from_str(&text).map_err(|_| ())?;
             match inbound {
                 DriverInbound::Location {
+                    category,
+                    status,
                     latitude,
                     longitude,
                     timestamp: _,
@@ -253,9 +275,9 @@ async fn handle_driver_message(
                     let mut dispatch = state.dispatch.lock().await;
                     dispatch.engine.upsert_driver_location(
                         driver_id,
-                        "tow_truck".to_string(),
+                        category,
                         Coordinates { latitude, longitude },
-                        DriverStatus::Available,
+                        status,
                     );
                     Ok(())
                 }
