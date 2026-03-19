@@ -666,7 +666,17 @@ fn parse_job_event_kinds(raw: Option<&str>) -> Result<Option<Vec<JobEventFilterK
 
 #[cfg(test)]
 mod tests {
-    use super::sign_webhook;
+    use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
+
+    use axum::extract::{Path, Query, State};
+    use chrono::Utc;
+    use spatiad_core::Engine;
+    use spatiad_dispatch::DispatchService;
+    use spatiad_types::{Coordinates, DriverStatus, JobRequest};
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    use super::*;
 
     #[test]
     fn webhook_signature_is_deterministic_for_same_input() {
@@ -677,5 +687,114 @@ mod tests {
 
         assert_eq!(signature_a, signature_b);
         assert_eq!(signature_a.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_applies_kinds_and_before_cursor() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let state = seeded_api_state(job_id, driver_id);
+
+        let first_page = dispatch_job_events(
+            State(state.clone()),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(1),
+                before: None,
+                kinds: Some("offer_created,offer_rejected".to_string()),
+            }),
+        )
+        .await
+        .expect("first page should succeed")
+        .0;
+
+        assert_eq!(first_page.events.len(), 1);
+        assert_eq!(first_page.events[0].kind, "offer_rejected");
+
+        let before = first_page
+            .next_before_cursor
+            .expect("first page should expose cursor");
+
+        let second_page = dispatch_job_events(
+            State(state),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(1),
+                before: Some(before),
+                kinds: Some("offer_created,offer_rejected".to_string()),
+            }),
+        )
+        .await
+        .expect("second page should succeed")
+        .0;
+
+        assert_eq!(second_page.events.len(), 1);
+        assert_eq!(second_page.events[0].kind, "offer_created");
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_rejects_unsupported_kind() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let state = seeded_api_state(job_id, driver_id);
+
+        let error = dispatch_job_events(
+            State(state),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: None,
+                kinds: Some("offer_created,unknown_event".to_string()),
+            }),
+        )
+        .await
+        .expect_err("invalid kind should fail");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1.error, "invalid_query");
+        assert!(error
+            .1
+            .message
+            .contains("unsupported event kind 'unknown_event'"));
+    }
+
+    fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {
+        let mut engine = Engine::new(8);
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let offer = engine.create_offer(job_id, driver_id, 30);
+        thread::sleep(StdDuration::from_millis(2));
+        let _ = engine.handle_offer_response(offer.offer_id, false);
+
+        ApiState {
+            dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
+            webhook_url: None,
+            webhook_secret: None,
+            driver_token: None,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
