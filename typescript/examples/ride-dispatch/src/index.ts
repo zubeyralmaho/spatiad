@@ -1,8 +1,31 @@
+import express, { type Request, type Response } from "express";
+
 import { SpatiadClient } from "@spatiad/sdk";
+import {
+  spatiadWebhookJson,
+  verifySpatiadWebhook
+} from "@spatiad/express-plugin";
 
 const client = new SpatiadClient("http://localhost:3000");
 
 const run = async () => {
+  const app = express();
+  const webhookSecret = process.env.SPATIAD_WEBHOOK_SECRET ?? "dev-secret";
+
+  app.post(
+    "/webhooks/spatiad",
+    spatiadWebhookJson(),
+    verifySpatiadWebhook({ secret: webhookSecret }),
+    (req: Request, res: Response) => {
+      console.log("verified webhook payload", req.body);
+      res.status(204).end();
+    }
+  );
+
+  app.listen(4000, () => {
+    console.log("example webhook server listening on :4000");
+  });
+
   const response = await client.createOffer({
     jobId: "33333333-3333-3333-3333-333333333333",
     category: "tow_truck",

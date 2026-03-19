@@ -26,9 +26,19 @@ importers:
 
   examples/ride-dispatch:
     dependencies:
+      '@spatiad/express-plugin':
+        specifier: workspace:*
+        version: link:../../packages/express-plugin
       '@spatiad/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      express:
+        specifier: ^4.21.2
+        version: 4.22.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.1
+        version: 5.0.6
 
   packages/docs: {}
 

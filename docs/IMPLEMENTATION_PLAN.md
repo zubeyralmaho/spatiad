@@ -13,3 +13,8 @@
 ## Acceptance gate
 
 MVP is not complete until documentation deliverables are published and validated against running examples.
+
+## Security implementation note
+
+Webhook callbacks now include signature/timestamp/nonce headers.
+The TypeScript example receiver demonstrates verification and replay protection middleware usage.

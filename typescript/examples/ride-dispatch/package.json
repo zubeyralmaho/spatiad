@@ -9,6 +9,11 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@spatiad/express-plugin": "workspace:*",
+    "express": "^4.21.2",
     "@spatiad/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1"
   }
 }
