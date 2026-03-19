@@ -77,6 +77,15 @@ impl DispatchService {
         self.engine.job_events(job_id, limit)
     }
 
+    pub fn job_events_before(
+        &self,
+        job_id: Uuid,
+        limit: usize,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Vec<JobEventRecord> {
+        self.engine.job_events_before(job_id, limit, before)
+    }
+
     pub fn handle_offer_response(
         &mut self,
         offer_id: Uuid,

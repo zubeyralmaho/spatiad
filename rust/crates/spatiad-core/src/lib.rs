@@ -264,10 +264,27 @@ impl Engine {
     }
 
     pub fn job_events(&self, job_id: Uuid, limit: usize) -> Vec<JobEventRecord> {
+        self.job_events_before(job_id, limit, None)
+    }
+
+    pub fn job_events_before(
+        &self,
+        job_id: Uuid,
+        limit: usize,
+        before: Option<chrono::DateTime<Utc>>,
+    ) -> Vec<JobEventRecord> {
         let max_items = if limit == 0 { 50 } else { limit };
         self.job_events
             .get(&job_id)
-            .map(|events| events.iter().rev().take(max_items).cloned().collect())
+            .map(|events| {
+                events
+                    .iter()
+                    .rev()
+                    .filter(|event| before.map(|cursor| event.occurred_at < cursor).unwrap_or(true))
+                    .take(max_items)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -362,6 +379,7 @@ impl Engine {
 mod tests {
     use chrono::{Duration, Utc};
     use spatiad_types::{Coordinates, DriverStatus};
+    use std::{thread, time::Duration as StdDuration};
 
     use super::*;
 
@@ -553,6 +571,51 @@ mod tests {
             event.kind,
             JobEventKind::MatchConfirmed { .. }
         )));
+    }
+
+    #[test]
+    fn job_events_before_cursor_filters_recent_events() {
+        let mut engine = Engine::new(8);
+        let driver_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let offer = engine.create_offer(job_id, driver_id, 30);
+        thread::sleep(StdDuration::from_millis(1));
+        let _ = engine.handle_offer_response(offer.offer_id, false);
+
+        let page_one = engine.job_events_before(job_id, 2, None);
+        assert_eq!(page_one.len(), 2);
+        let cursor = page_one
+            .last()
+            .map(|event| event.occurred_at)
+            .expect("expected second event timestamp");
+
+        let page_two = engine.job_events_before(job_id, 10, Some(cursor));
+        assert!(page_two.iter().all(|event| event.occurred_at < cursor));
     }
 }
 

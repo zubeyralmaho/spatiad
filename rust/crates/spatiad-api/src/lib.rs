@@ -68,12 +68,14 @@ pub struct JobStatusResponse {
 #[derive(Debug, Deserialize)]
 pub struct JobEventsQuery {
     pub limit: Option<usize>,
+    pub before: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct JobEventsResponse {
     pub job_id: Uuid,
     pub events: Vec<JobEventResponse>,
+    pub next_before_cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -211,13 +213,30 @@ async fn dispatch_job_events(
 ) -> Json<JobEventsResponse> {
     let dispatch = state.dispatch.lock().await;
     let limit = query.limit.unwrap_or(50);
+
+    let before = query
+        .before
+        .as_deref()
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|value| value.with_timezone(&Utc));
+
     let events = dispatch
-        .job_events(job_id, limit)
+        .job_events_before(job_id, limit, before)
         .into_iter()
         .map(map_job_event)
-        .collect();
+        .collect::<Vec<_>>();
 
-    Json(JobEventsResponse { job_id, events })
+    let next_before_cursor = if events.len() >= limit.max(1) {
+        events.last().map(|event| event.at.to_rfc3339())
+    } else {
+        None
+    };
+
+    Json(JobEventsResponse {
+        job_id,
+        events,
+        next_before_cursor,
+    })
 }
 
 async fn driver_ws(
