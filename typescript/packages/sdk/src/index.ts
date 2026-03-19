@@ -99,7 +99,10 @@ export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & 
   onPage?: (page: JobEventsResponse, pageIndex: number) => void;
 };
 
-export type IterateJobEventsRequest = GetJobEventsAllPagesRequest;
+export type IterateJobEventsRequest = GetJobEventsAllPagesRequest & {
+  resumeOnTransientError?: boolean;
+  maxResumeAttempts?: number;
+};
 
 export type JobEvent = {
   at: string;
@@ -285,20 +288,45 @@ export class SpatiadClient {
       return;
     }
 
+    const resumeOnTransientError = request.resumeOnTransientError ?? false;
+    const maxResumeAttempts = Math.max(0, request.maxResumeAttempts ?? 3);
     let cursor: string | undefined;
     let yielded = 0;
+    let resumeAttempts = 0;
 
     for (let page = 0; page < maxPages; page += 1) {
-      const current = await this.getJobEvents({
-        jobId: request.jobId,
-        limit: request.limit,
-        cursor,
-        kinds: request.kinds,
-        dispatcherToken: request.dispatcherToken,
-        dispatcherAuthMode: request.dispatcherAuthMode,
-        signal: request.signal,
-        retry: request.retry
-      });
+      let current: JobEventsResponse;
+      try {
+        current = await this.getJobEvents({
+          jobId: request.jobId,
+          limit: request.limit,
+          cursor,
+          kinds: request.kinds,
+          dispatcherToken: request.dispatcherToken,
+          dispatcherAuthMode: request.dispatcherAuthMode,
+          signal: request.signal,
+          retry: request.retry
+        });
+      } catch (error) {
+        if (
+          resumeOnTransientError
+          && error instanceof SpatiadApiError
+          && error.retryable
+          && resumeAttempts < maxResumeAttempts
+        ) {
+          resumeAttempts += 1;
+          const backoffBase = Math.max(0, request.retry?.backoffMs ?? 150);
+          const backoffMax = Math.max(backoffBase, request.retry?.maxBackoffMs ?? 2000);
+          const waitMs = Math.min(backoffMax, backoffBase * (2 ** (resumeAttempts - 1)));
+          await waitWithSignal(waitMs, request.signal);
+          page -= 1;
+          continue;
+        }
+
+        throw error;
+      }
+
+      resumeAttempts = 0;
 
       request.onPage?.(current, page);
 

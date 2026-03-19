@@ -531,3 +531,79 @@ test("iterateJobEvents respects maxEvents", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("iterateJobEvents can resume on transient api errors", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return makeJsonResponse(503, {
+        error: "service_unavailable",
+        message: "temporary outage"
+      });
+    }
+
+    return makeJsonResponse(200, {
+      job_id: "job-iter-recover",
+      events: [
+        { at: "2026-03-20T10:00:00Z", kind: "offer_created", offer_id: "o1", driver_id: "d1", status: "pending" }
+      ],
+      next_cursor: null,
+      next_before_cursor: null
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    const streamed = [];
+
+    for await (const event of client.iterateJobEvents({
+      jobId: "job-iter-recover",
+      resumeOnTransientError: true,
+      maxResumeAttempts: 1,
+      retry: { maxAttempts: 1, backoffMs: 1, retryOnStatuses: [503] }
+    })) {
+      streamed.push(event.kind);
+    }
+
+    assert.deepEqual(streamed, ["offer_created"]);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("iterateJobEvents fails without resumeOnTransientError", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    makeJsonResponse(503, {
+      error: "service_unavailable",
+      message: "temporary outage"
+    });
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+
+    await assert.rejects(
+      async () => {
+        for await (const _event of client.iterateJobEvents({
+          jobId: "job-iter-fail",
+          retry: { maxAttempts: 1, retryOnStatuses: [503] }
+        })) {
+          // no-op
+        }
+      },
+      (error) => {
+        assert.ok(error instanceof SpatiadApiError);
+        assert.equal(error.status, 503);
+        assert.equal(error.retryable, true);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
