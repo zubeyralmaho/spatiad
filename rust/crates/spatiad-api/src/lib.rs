@@ -867,7 +867,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
 
     use axum::extract::{Path, Query, State};
-    use axum::http::HeaderMap;
+    use axum::http::{HeaderMap, HeaderValue};
     use chrono::Utc;
     use spatiad_core::Engine;
     use spatiad_dispatch::DispatchService;
@@ -1041,6 +1041,62 @@ mod tests {
             .1
             .message
             .contains("either 'before' or 'cursor'"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_requires_dispatcher_token_when_configured() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let mut state = seeded_api_state(job_id, driver_id);
+        state.dispatcher_token = Some("secret-token".to_string());
+
+        let error = dispatch_job_events(
+            State(state),
+            HeaderMap::new(),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: None,
+                cursor: None,
+                kinds: None,
+            }),
+        )
+        .await
+        .expect_err("missing token should fail");
+
+        assert_eq!(error.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(error.1.error, "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_accepts_valid_bearer_token() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let mut state = seeded_api_state(job_id, driver_id);
+        state.dispatcher_token = Some("secret-token".to_string());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret-token"),
+        );
+
+        let response = dispatch_job_events(
+            State(state),
+            headers,
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: None,
+                cursor: None,
+                kinds: None,
+            }),
+        )
+        .await
+        .expect("valid bearer token should pass")
+        .0;
+
+        assert!(!response.events.is_empty());
     }
 
     fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {

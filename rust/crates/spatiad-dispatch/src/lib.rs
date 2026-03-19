@@ -189,6 +189,8 @@ fn expand_radius_km(current_radius_km: f64, max_radius_km: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{thread, time::Duration as StdDuration};
+
     use chrono::Utc;
     use spatiad_types::{Coordinates, DriverStatus};
 
@@ -225,5 +227,105 @@ mod tests {
 
         let offer = dispatch.submit_job(job).expect("expected driver to be found after expansion");
         assert_eq!(offer.driver_id, driver_id);
+    }
+
+    #[test]
+    fn rejected_offer_creates_next_offer_for_same_job() {
+        let mut engine = Engine::new(8);
+        let driver_a = Uuid::new_v4();
+        let driver_b = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_a,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+        engine.upsert_driver_location(
+            driver_b,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.434,
+                longitude: 26.769,
+            },
+            DriverStatus::Available,
+        );
+
+        let mut dispatch = DispatchService::new(engine);
+        let job = JobRequest {
+            job_id: Uuid::new_v4(),
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 20,
+            created_at: Utc::now(),
+        };
+
+        let first_offer = dispatch.submit_job(job).expect("first offer expected");
+        let update = dispatch
+            .handle_offer_response(first_offer.offer_id, false)
+            .expect("reject should be handled");
+
+        assert!(update.matched.is_none());
+        assert_eq!(update.new_offers.len(), 1);
+        assert_ne!(update.new_offers[0].driver_id, first_offer.driver_id);
+    }
+
+    #[test]
+    fn global_expiration_advances_job_to_next_driver() {
+        let mut engine = Engine::new(8);
+        let driver_a = Uuid::new_v4();
+        let driver_b = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_a,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+        engine.upsert_driver_location(
+            driver_b,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.434,
+                longitude: 26.769,
+            },
+            DriverStatus::Available,
+        );
+
+        let mut dispatch = DispatchService::new(engine);
+        let job = JobRequest {
+            job_id: Uuid::new_v4(),
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 1,
+            created_at: Utc::now(),
+        };
+
+        let first_offer = dispatch.submit_job(job).expect("first offer expected");
+        thread::sleep(StdDuration::from_millis(1200));
+
+        let update = dispatch.expire_pending_offers_global();
+        assert_eq!(update.expired.len(), 1);
+        assert_eq!(update.expired[0].offer_id, first_offer.offer_id);
+        assert_eq!(update.new_offers.len(), 1);
+        assert_ne!(update.new_offers[0].driver_id, first_offer.driver_id);
     }
 }
