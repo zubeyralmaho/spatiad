@@ -27,6 +27,7 @@ pub struct ApiState {
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
     pub driver_token: Option<String>,
+    pub dispatcher_token: Option<String>,
     pub sessions: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<DriverOutbound>>>>,
 }
 
@@ -125,8 +126,13 @@ async fn health() -> Json<HealthResponse> {
 
 async fn dispatch_offer(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(payload): Json<OfferRequest>,
 ) -> impl IntoResponse {
+    if !is_dispatcher_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let mut dispatch = state.dispatch.lock().await;
     let request = JobRequest {
         job_id: payload.job_id,
@@ -147,8 +153,13 @@ async fn dispatch_offer(
 
 async fn upsert_driver(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(payload): Json<DriverUpsertRequest>,
 ) -> impl IntoResponse {
+    if !is_dispatcher_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
     let mut dispatch = state.dispatch.lock().await;
     dispatch.engine.upsert_driver_location(
         payload.driver_id,
@@ -162,8 +173,13 @@ async fn upsert_driver(
 
 async fn cancel_offer(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Json(payload): Json<OfferCancelRequest>,
 ) -> impl IntoResponse {
+    if !is_dispatcher_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
     let mut dispatch = state.dispatch.lock().await;
     dispatch.cancel_offer(payload.offer_id);
     axum::http::StatusCode::OK
@@ -171,8 +187,13 @@ async fn cancel_offer(
 
 async fn dispatch_job_status(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(job_id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if !is_dispatcher_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     let dispatch = state.dispatch.lock().await;
     let job_state = dispatch.job_dispatch_state(job_id);
 
@@ -212,14 +233,25 @@ async fn dispatch_job_status(
         },
     };
 
-    Json(response)
+    Json(response).into_response()
 }
 
 async fn dispatch_job_events(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(job_id): Path<Uuid>,
     Query(query): Query<JobEventsQuery>,
 ) -> Result<Json<JobEventsResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    if !is_dispatcher_authorized(&state, &headers) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ApiErrorResponse {
+                error: "unauthorized",
+                message: "missing or invalid dispatcher auth token".to_string(),
+            }),
+        ));
+    }
+
     let limit = query.limit.unwrap_or(50);
 
     if query.before.is_some() && query.cursor.is_some() {
@@ -334,6 +366,29 @@ fn is_driver_authorized(state: &ApiState, headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn is_dispatcher_authorized(state: &ApiState, headers: &HeaderMap) -> bool {
+    let Some(expected) = &state.dispatcher_token else {
+        return true;
+    };
+
+    let auth_matches = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(|token| token == expected)
+        .unwrap_or(false);
+
+    if auth_matches {
+        return true;
+    }
+
+    headers
+        .get("x-spatiad-dispatcher-token")
+        .and_then(|value| value.to_str().ok())
+        .map(|token| token == expected)
+        .unwrap_or(false)
+}
+
 async fn handle_driver_session(state: ApiState, driver_id: Uuid, mut socket: WebSocket) {
     let (session_tx, mut session_rx) = mpsc::unbounded_channel::<DriverOutbound>();
     {
@@ -424,15 +479,19 @@ async fn flush_expired_offers(
     driver_id: Uuid,
     socket: &mut WebSocket,
 ) -> Result<(), ()> {
-    let expired_offer_ids = {
+    let update = {
         let mut dispatch = state.dispatch.lock().await;
         dispatch.expire_pending_offers_for_driver(driver_id)
     };
 
-    for offer_id in expired_offer_ids {
-        let payload = DriverOutbound::OfferExpired { offer_id };
+    for item in update.expired {
+        let payload = DriverOutbound::OfferExpired {
+            offer_id: item.offer_id,
+        };
         send_outbound(socket, &payload).await?;
     }
+
+    notify_new_offers(state, update.new_offers).await;
 
     Ok(())
 }
@@ -466,14 +525,16 @@ async fn handle_driver_message(
                 DriverInbound::OfferResponse { offer_id, accepted } => {
                     flush_expired_offers(state, driver_id, socket).await?;
 
-                    let match_result = {
+                    let update = {
                         let mut dispatch = state.dispatch.lock().await;
                         dispatch
                             .handle_offer_response(offer_id, accepted)
                             .map_err(|_| ())?
                     };
 
-                    if let Some(result) = match_result {
+                    notify_new_offers(state, update.new_offers).await;
+
+                    if let Some(result) = update.matched {
                         let outbound = DriverOutbound::Matched {
                             offer_id: result.offer_id,
                             job_id: result.job_id,
@@ -528,6 +589,70 @@ async fn notify_competing_cancellations(state: &ApiState, job_id: Uuid) {
             });
         }
     }
+}
+
+async fn notify_new_offers(state: &ApiState, offers: Vec<spatiad_types::OfferRecord>) {
+    if offers.is_empty() {
+        return;
+    }
+
+    for offer in offers {
+        let outbound = {
+            let dispatch = state.dispatch.lock().await;
+            dispatch
+                .pending_offers_for_driver(offer.driver_id)
+                .into_iter()
+                .find(|pending| pending.offer_id == offer.offer_id)
+                .map(|pending| DriverOutbound::Offer {
+                    offer_id: pending.offer_id,
+                    job_id: pending.job_id,
+                    pickup: pending.pickup,
+                    dropoff: pending.dropoff,
+                    expires_at: pending.expires_at,
+                })
+        };
+
+        let Some(outbound) = outbound else {
+            continue;
+        };
+
+        let sessions = state.sessions.lock().await;
+        if let Some(tx) = sessions.get(&offer.driver_id) {
+            let _ = tx.send(outbound);
+        }
+    }
+}
+
+pub fn start_background_tasks(state: ApiState) {
+    let background_state = state;
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+            let update = {
+                let mut dispatch = background_state.dispatch.lock().await;
+                dispatch.expire_pending_offers_global()
+            };
+
+            if update.expired.is_empty() && update.new_offers.is_empty() {
+                continue;
+            }
+
+            let sessions = background_state.sessions.lock().await;
+            for item in &update.expired {
+                if let Some(tx) = sessions.get(&item.driver_id) {
+                    let _ = tx.send(DriverOutbound::OfferExpired {
+                        offer_id: item.offer_id,
+                    });
+                }
+            }
+            drop(sessions);
+
+            notify_new_offers(&background_state, update.new_offers).await;
+        }
+    });
 }
 
 #[derive(Debug, Serialize)]
@@ -742,6 +867,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc, thread, time::Duration as StdDuration};
 
     use axum::extract::{Path, Query, State};
+    use axum::http::HeaderMap;
     use chrono::Utc;
     use spatiad_core::Engine;
     use spatiad_dispatch::DispatchService;
@@ -770,6 +896,7 @@ mod tests {
 
         let first_page = dispatch_job_events(
             State(state.clone()),
+            HeaderMap::new(),
             Path(job_id),
             Query(JobEventsQuery {
                 limit: Some(1),
@@ -790,6 +917,7 @@ mod tests {
 
         let second_page = dispatch_job_events(
             State(state),
+            HeaderMap::new(),
             Path(job_id),
             Query(JobEventsQuery {
                 limit: Some(1),
@@ -814,6 +942,7 @@ mod tests {
 
         let error = dispatch_job_events(
             State(state),
+            HeaderMap::new(),
             Path(job_id),
             Query(JobEventsQuery {
                 limit: Some(10),
@@ -841,6 +970,7 @@ mod tests {
 
         let error = dispatch_job_events(
             State(state),
+            HeaderMap::new(),
             Path(job_id),
             Query(JobEventsQuery {
                 limit: Some(10),
@@ -868,6 +998,7 @@ mod tests {
 
         let error = dispatch_job_events(
             State(state),
+            HeaderMap::new(),
             Path(job_id),
             Query(JobEventsQuery {
                 limit: Some(10),
@@ -882,6 +1013,34 @@ mod tests {
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert_eq!(error.1.error, "invalid_query");
         assert!(error.1.message.contains("invalid 'cursor' format"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_job_events_rejects_before_and_cursor_together() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let state = seeded_api_state(job_id, driver_id);
+
+        let error = dispatch_job_events(
+            State(state),
+            HeaderMap::new(),
+            Path(job_id),
+            Query(JobEventsQuery {
+                limit: Some(10),
+                before: Some("2026-03-20T10:00:00Z".to_string()),
+                cursor: Some("2026-03-20T09:59:59Z|42".to_string()),
+                kinds: None,
+            }),
+        )
+        .await
+        .expect_err("before+cursor should fail");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1.error, "invalid_query");
+        assert!(error
+            .1
+            .message
+            .contains("either 'before' or 'cursor'"));
     }
 
     fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {
@@ -920,6 +1079,7 @@ mod tests {
             webhook_url: None,
             webhook_secret: None,
             driver_token: None,
+            dispatcher_token: None,
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }

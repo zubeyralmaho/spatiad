@@ -2,6 +2,12 @@
 
 Base URL: http://localhost:3000
 
+Authentication notes:
+
+- If `SPATIAD_DISPATCHER_TOKEN` is configured, dispatcher endpoints require either:
+  - `Authorization: Bearer <token>`
+  - `x-spatiad-dispatcher-token: <token>`
+
 ## GET /health
 
 Response:

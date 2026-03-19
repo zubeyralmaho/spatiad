@@ -2,7 +2,7 @@
 
 ## Authentication
 
-- Dispatcher API: bearer token or signed internal token
+- Dispatcher API: optional static token via `Authorization: Bearer <token>` or `x-spatiad-dispatcher-token` when `SPATIAD_DISPATCHER_TOKEN` is set
 - Driver stream: optional static token via `x-spatiad-driver-token` when `SPATIAD_DRIVER_TOKEN` is set
 
 ## Integrity

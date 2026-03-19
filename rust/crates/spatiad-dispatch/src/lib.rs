@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use spatiad_core::Engine;
 use spatiad_core::CancelledDriverOffer;
+use spatiad_core::ExpiredOffer;
 use spatiad_core::JobDispatchState;
 use spatiad_core::JobEventsCursor;
 use spatiad_core::JobEventFilterKind;
@@ -20,6 +23,18 @@ pub enum DispatchError {
 #[derive(Debug)]
 pub struct DispatchService {
     pub engine: Engine,
+}
+
+#[derive(Debug, Default)]
+pub struct OfferResponseUpdate {
+    pub matched: Option<MatchResult>,
+    pub new_offers: Vec<OfferRecord>,
+}
+
+#[derive(Debug, Default)]
+pub struct ExpirationUpdate {
+    pub expired: Vec<ExpiredOffer>,
+    pub new_offers: Vec<OfferRecord>,
 }
 
 impl DispatchService {
@@ -63,8 +78,36 @@ impl DispatchService {
         self.engine.pending_offers_for_driver(driver_id)
     }
 
-    pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<Uuid> {
-        self.engine.expire_pending_offers_for_driver(driver_id)
+    pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> ExpirationUpdate {
+        let expired = self.engine.expire_pending_offers_for_driver(driver_id);
+        let mut seen_jobs = HashSet::new();
+        let mut new_offers = Vec::new();
+
+        for item in &expired {
+            if seen_jobs.insert(item.job_id) {
+                if let Some(offer) = self.engine.create_next_offer_for_job(item.job_id) {
+                    new_offers.push(offer);
+                }
+            }
+        }
+
+        ExpirationUpdate { expired, new_offers }
+    }
+
+    pub fn expire_pending_offers_global(&mut self) -> ExpirationUpdate {
+        let expired = self.engine.expire_pending_offers_global();
+        let mut seen_jobs = HashSet::new();
+        let mut new_offers = Vec::new();
+
+        for item in &expired {
+            if seen_jobs.insert(item.job_id) {
+                if let Some(offer) = self.engine.create_next_offer_for_job(item.job_id) {
+                    new_offers.push(offer);
+                }
+            }
+        }
+
+        ExpirationUpdate { expired, new_offers }
     }
 
     pub fn cancelled_offers_for_job(&self, job_id: Uuid) -> Vec<CancelledDriverOffer> {
@@ -114,10 +157,28 @@ impl DispatchService {
         &mut self,
         offer_id: Uuid,
         accepted: bool,
-    ) -> Result<Option<MatchResult>, DispatchError> {
-        self.engine
+    ) -> Result<OfferResponseUpdate, DispatchError> {
+        let job_id = self
+            .engine
+            .offer_job_id(offer_id)
+            .ok_or(DispatchError::InvalidOfferResponse)?;
+
+        let matched = self
+            .engine
             .handle_offer_response(offer_id, accepted)
-            .map_err(|_| DispatchError::InvalidOfferResponse)
+            .map_err(|_| DispatchError::InvalidOfferResponse)?;
+
+        let mut new_offers = Vec::new();
+        if matched.is_none() {
+            if let Some(offer) = self.engine.create_next_offer_for_job(job_id) {
+                new_offers.push(offer);
+            }
+        }
+
+        Ok(OfferResponseUpdate {
+            matched,
+            new_offers,
+        })
     }
 }
 

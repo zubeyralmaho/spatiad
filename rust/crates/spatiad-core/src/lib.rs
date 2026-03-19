@@ -34,6 +34,13 @@ pub struct CancelledDriverOffer {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExpiredOffer {
+    pub offer_id: Uuid,
+    pub driver_id: Uuid,
+    pub job_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
 pub enum JobDispatchState {
     UnknownJob,
     Pending,
@@ -215,10 +222,9 @@ impl Engine {
             .collect()
     }
 
-    pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<Uuid> {
+    pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<ExpiredOffer> {
         let now = Utc::now();
         let mut expired = Vec::new();
-        let mut expired_events: Vec<(Uuid, Uuid)> = Vec::new();
 
         for offer in self.offers.values_mut() {
             if offer.driver_id == driver_id
@@ -226,22 +232,110 @@ impl Engine {
                 && offer.expires_at <= now
             {
                 offer.status = OfferStatus::Expired;
-                expired.push(offer.offer_id);
-                expired_events.push((offer.job_id, offer.offer_id));
+                expired.push(ExpiredOffer {
+                    offer_id: offer.offer_id,
+                    driver_id: offer.driver_id,
+                    job_id: offer.job_id,
+                });
             }
         }
 
-        for (job_id, offer_id) in expired_events {
+        for item in &expired {
             self.push_job_event(
-                job_id,
+                item.job_id,
                 JobEventKind::OfferExpired {
-                    offer_id,
-                    driver_id,
+                    offer_id: item.offer_id,
+                    driver_id: item.driver_id,
                 },
             );
         }
 
         expired
+    }
+
+    pub fn expire_pending_offers_global(&mut self) -> Vec<ExpiredOffer> {
+        let now = Utc::now();
+        let mut expired = Vec::new();
+
+        for offer in self.offers.values_mut() {
+            if offer.status == OfferStatus::Pending && offer.expires_at <= now {
+                offer.status = OfferStatus::Expired;
+                expired.push(ExpiredOffer {
+                    offer_id: offer.offer_id,
+                    driver_id: offer.driver_id,
+                    job_id: offer.job_id,
+                });
+            }
+        }
+
+        for item in &expired {
+            self.push_job_event(
+                item.job_id,
+                JobEventKind::OfferExpired {
+                    offer_id: item.offer_id,
+                    driver_id: item.driver_id,
+                },
+            );
+        }
+
+        expired
+    }
+
+    pub fn offer_job_id(&self, offer_id: Uuid) -> Option<Uuid> {
+        self.offers.get(&offer_id).map(|offer| offer.job_id)
+    }
+
+    pub fn create_next_offer_for_job(&mut self, job_id: Uuid) -> Option<OfferRecord> {
+        let job = self.jobs.get(&job_id)?.clone();
+
+        if self
+            .offers
+            .values()
+            .any(|offer| offer.job_id == job_id && offer.status == OfferStatus::Accepted)
+        {
+            return None;
+        }
+
+        if self
+            .offers
+            .values()
+            .any(|offer| offer.job_id == job_id && offer.status == OfferStatus::Pending)
+        {
+            return None;
+        }
+
+        let already_offered: std::collections::HashSet<Uuid> = self
+            .offers
+            .values()
+            .filter(|offer| offer.job_id == job_id)
+            .map(|offer| offer.driver_id)
+            .collect();
+
+        let mut radius_km = job.initial_radius_km.max(0.1);
+        let max_radius_km = job.max_radius_km.max(radius_km);
+
+        while radius_km <= max_radius_km + f64::EPSILON {
+            let candidates = self.nearest_candidates_in_radius(
+                job.pickup,
+                &job.category,
+                radius_km,
+                32,
+            );
+
+            if let Some(driver_id) = candidates
+                .into_iter()
+                .find(|driver_id| !already_offered.contains(driver_id))
+            {
+                return Some(self.create_offer(job_id, driver_id, job.timeout_seconds));
+            }
+
+            radius_km = expand_radius_km(radius_km, max_radius_km);
+            if radius_km > max_radius_km {
+                break;
+            }
+        }
+
+        None
     }
 
     pub fn cancelled_offers_for_job(&self, job_id: Uuid) -> Vec<CancelledDriverOffer> {
@@ -482,7 +576,9 @@ mod tests {
 
         let expired = engine.expire_pending_offers_for_driver(driver_id);
         assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0], offer.offer_id);
+        assert_eq!(expired[0].offer_id, offer.offer_id);
+        assert_eq!(expired[0].driver_id, driver_id);
+        assert_eq!(expired[0].job_id, job_id);
     }
 
     #[test]
@@ -821,4 +917,9 @@ fn event_filter_kind(kind: &JobEventKind) -> JobEventFilterKind {
         JobEventKind::MatchConfirmed { .. } => JobEventFilterKind::MatchConfirmed,
         JobEventKind::OfferStatusUpdated { .. } => JobEventFilterKind::OfferStatusUpdated,
     }
+}
+
+fn expand_radius_km(current_radius_km: f64, max_radius_km: f64) -> f64 {
+    let next = current_radius_km + 2.0;
+    next.min(max_radius_km + 1.0)
 }
