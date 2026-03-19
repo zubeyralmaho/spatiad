@@ -13,6 +13,23 @@ Response:
 }
 ```
 
+## POST /api/v1/driver/upsert
+
+Registers or updates a driver snapshot in the in-memory engine.
+
+Request:
+
+```json
+{
+  "driver_id": "uuid",
+  "category": "tow_truck",
+  "status": "Available",
+  "position": { "latitude": 38.433, "longitude": 26.768 }
+}
+```
+
+Response: 200 OK
+
 ## POST /api/v1/dispatch/offer
 
 Request:
@@ -34,6 +51,12 @@ Success response (202):
 ```json
 { "offer_id": "uuid" }
 ```
+
+Behavior notes:
+
+- Candidate search starts at `initial_radius_km`.
+- If no candidate is found, search radius expands in +2 km steps until `max_radius_km`.
+- Engine selects the nearest available driver in the current search radius.
 
 Fallback response (404 in current scaffold):
 

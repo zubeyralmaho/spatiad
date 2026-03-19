@@ -10,7 +10,7 @@ use axum::extract::ws::WebSocket;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use spatiad_dispatch::DispatchService;
-use spatiad_types::{Coordinates, JobRequest};
+use spatiad_types::{Coordinates, DriverStatus, JobRequest};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -46,9 +46,18 @@ pub struct OfferCancelRequest {
     pub offer_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DriverUpsertRequest {
+    pub driver_id: Uuid,
+    pub category: String,
+    pub status: DriverStatus,
+    pub position: Coordinates,
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/api/v1/driver/upsert", post(upsert_driver))
         .route("/api/v1/dispatch/offer", post(dispatch_offer))
         .route("/api/v1/dispatch/cancel", post(cancel_offer))
         .route("/api/v1/stream/driver/:driver_id", get(driver_ws))
@@ -82,6 +91,21 @@ async fn dispatch_offer(
         Ok(offer) => (axum::http::StatusCode::ACCEPTED, Json(OfferAccepted { offer_id: offer.offer_id })).into_response(),
         Err(_) => (axum::http::StatusCode::NOT_FOUND, Json(OfferAccepted { offer_id: Uuid::nil() })).into_response(),
     }
+}
+
+async fn upsert_driver(
+    State(state): State<ApiState>,
+    Json(payload): Json<DriverUpsertRequest>,
+) -> impl IntoResponse {
+    let mut dispatch = state.dispatch.lock().await;
+    dispatch.engine.upsert_driver_location(
+        payload.driver_id,
+        payload.category,
+        payload.position,
+        payload.status,
+    );
+
+    axum::http::StatusCode::OK
 }
 
 async fn cancel_offer(

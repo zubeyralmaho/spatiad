@@ -1004,6 +1004,7 @@ dependencies = [
 name = "spatiad-dispatch"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "spatiad-core",
  "spatiad-types",
  "thiserror",

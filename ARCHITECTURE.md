@@ -22,12 +22,13 @@ Spatiad runs as a single Rust process.
 
 ## Request flow (target)
 
-1. Dispatcher posts a job request.
-2. Dispatch service asks core + spatial index for nearest eligible drivers.
-3. Offers are sent over WebSocket.
-4. If timeout expires, radius expands and next candidates are notified.
-5. First valid acceptance wins the lock.
-6. Match webhook is sent back to main backend.
+1. Driver app or backend upserts live driver location/state to `/api/v1/driver/upsert`.
+2. Dispatcher posts a job request.
+3. Dispatch service queries nearest eligible drivers within `initial_radius_km`.
+4. If no candidate is found, radius expands in +2 km steps up to `max_radius_km`.
+5. Offers are sent over WebSocket.
+6. First valid acceptance wins the lock.
+7. Match webhook is sent back to main backend.
 
 ## Data durability (MVP)
 

@@ -20,8 +20,9 @@
 
 1. Job is created by dispatcher.
 2. Matching selects candidate drivers from spatial index.
-3. Offers are sent with timeout.
-4. If first acceptance arrives, job transitions to matched.
-5. If timeout or rejection occurs for all candidates, radius expands and next batch begins.
+3. Search begins at `initial_radius_km` and expands in +2 km steps up to `max_radius_km`.
+4. Offers are sent with timeout.
+5. If first acceptance arrives, job transitions to matched.
+6. If timeout or rejection occurs for all candidates, next batch begins until max radius is reached.
 
 Detailed timer wheel and arbitration logic will be implemented in dispatch phase.

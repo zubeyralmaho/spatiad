@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
-    #[error("driver not found")]
-    DriverNotFound,
+    #[error("offer not found")]
+    OfferNotFound,
 }
 
 #[derive(Debug)]
@@ -67,25 +67,54 @@ impl Engine {
         offer
     }
 
-    pub fn nearest_candidates(&self, pickup: Coordinates, category: &str, limit: usize) -> Vec<Uuid> {
-        self.spatial
-            .candidates_in_same_cell(pickup)
-            .into_iter()
-            .filter(|driver_id| {
-                self.drivers
-                    .get(driver_id)
-                    .map(|driver| {
-                        driver.status == DriverStatus::Available && driver.category.eq_ignore_ascii_case(category)
-                    })
-                    .unwrap_or(false)
+    pub fn nearest_candidates_in_radius(
+        &self,
+        pickup: Coordinates,
+        category: &str,
+        radius_km: f64,
+        limit: usize,
+    ) -> Vec<Uuid> {
+        let mut candidates: Vec<(Uuid, f64)> = self
+            .drivers
+            .iter()
+            .filter_map(|(driver_id, driver)| {
+                if driver.status != DriverStatus::Available || !driver.category.eq_ignore_ascii_case(category) {
+                    return None;
+                }
+
+                let distance_km = haversine_km(pickup, driver.position);
+                if distance_km <= radius_km {
+                    Some((*driver_id, distance_km))
+                } else {
+                    None
+                }
             })
-            .take(limit)
-            .collect()
+            .collect();
+
+        candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.into_iter().take(limit).map(|(id, _)| id).collect()
     }
 
     pub fn mark_offer_status(&mut self, offer_id: Uuid, status: OfferStatus) -> Result<(), CoreError> {
-        let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::DriverNotFound)?;
+        let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
         offer.status = status;
         Ok(())
     }
+}
+
+fn haversine_km(a: Coordinates, b: Coordinates) -> f64 {
+    let earth_radius_km = 6371.0_f64;
+
+    let a_lat = a.latitude.to_radians();
+    let a_lon = a.longitude.to_radians();
+    let b_lat = b.latitude.to_radians();
+    let b_lon = b.longitude.to_radians();
+
+    let d_lat = b_lat - a_lat;
+    let d_lon = b_lon - a_lon;
+
+    let s = (d_lat / 2.0).sin().powi(2)
+        + a_lat.cos() * b_lat.cos() * (d_lon / 2.0).sin().powi(2);
+
+    2.0 * earth_radius_km * s.sqrt().asin()
 }
