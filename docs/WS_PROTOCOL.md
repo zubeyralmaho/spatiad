@@ -4,7 +4,12 @@ Endpoint:
 
 - /api/v1/stream/driver/{driver_id}
 
-Current scaffold includes endpoint handshake only. Session manager is pending.
+Current implementation includes a basic session loop:
+
+- On connect/reconnect, pending offers for that driver are replayed.
+- `location` messages update in-memory driver position.
+- `offer_response` messages mark the offer as accepted/rejected.
+- On accepted response, a `matched` message is sent back.
 
 ## Inbound messages (driver -> spatiad)
 
@@ -15,6 +20,10 @@ Current scaffold includes endpoint handshake only. Session manager is pending.
 ```json
 { "type": "offer_response", "offer_id": "uuid", "accepted": true }
 ```
+
+## Reconnect behavior
+
+If a driver disconnects while offers are still pending, those offers remain in-memory and are flushed on the next successful reconnect of the same `driver_id`.
 
 ## Outbound messages (spatiad -> driver)
 

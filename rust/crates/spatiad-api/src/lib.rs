@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
+    extract::ws::Message,
     extract::{Path, State, WebSocketUpgrade},
     response::IntoResponse,
     routing::{get, post},
@@ -11,6 +12,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest};
+use spatiad_ws::{DriverInbound, DriverOutbound};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -118,10 +120,114 @@ async fn cancel_offer(
 }
 
 async fn driver_ws(
+    State(state): State<ApiState>,
     Path(_driver_id): Path<Uuid>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|_socket: WebSocket| async move {
-        // Placeholder for resilient WS session manager.
+    ws.on_upgrade(move |socket: WebSocket| async move {
+        handle_driver_session(state, _driver_id, socket).await;
     })
+}
+
+async fn handle_driver_session(state: ApiState, driver_id: Uuid, mut socket: WebSocket) {
+    if replay_pending_offers(&state, driver_id, &mut socket).await.is_err() {
+        return;
+    }
+
+    loop {
+        let Some(message_result) = socket.recv().await else {
+            break;
+        };
+
+        let message = match message_result {
+            Ok(value) => value,
+            Err(_) => break,
+        };
+
+        if handle_driver_message(&state, driver_id, &mut socket, message)
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+}
+
+async fn replay_pending_offers(
+    state: &ApiState,
+    driver_id: Uuid,
+    socket: &mut WebSocket,
+) -> Result<(), ()> {
+    let pending = {
+        let dispatch = state.dispatch.lock().await;
+        dispatch.pending_offers_for_driver(driver_id)
+    };
+
+    for offer in pending {
+        let payload = DriverOutbound::Offer {
+            offer_id: offer.offer_id,
+            job_id: offer.job_id,
+            pickup: offer.pickup,
+            dropoff: offer.dropoff,
+            expires_at: offer.expires_at,
+        };
+
+        let text = serde_json::to_string(&payload).map_err(|_| ())?;
+        socket.send(Message::Text(text)).await.map_err(|_| ())?;
+    }
+
+    Ok(())
+}
+
+async fn handle_driver_message(
+    state: &ApiState,
+    driver_id: Uuid,
+    socket: &mut WebSocket,
+    message: Message,
+) -> Result<(), ()> {
+    match message {
+        Message::Text(text) => {
+            let inbound: DriverInbound = serde_json::from_str(&text).map_err(|_| ())?;
+            match inbound {
+                DriverInbound::Location {
+                    latitude,
+                    longitude,
+                    timestamp: _,
+                } => {
+                    let mut dispatch = state.dispatch.lock().await;
+                    dispatch.engine.upsert_driver_location(
+                        driver_id,
+                        "tow_truck".to_string(),
+                        Coordinates { latitude, longitude },
+                        DriverStatus::Available,
+                    );
+                    Ok(())
+                }
+                DriverInbound::OfferResponse { offer_id, accepted } => {
+                    let match_result = {
+                        let mut dispatch = state.dispatch.lock().await;
+                        dispatch
+                            .handle_offer_response(offer_id, accepted)
+                            .map_err(|_| ())?
+                    };
+
+                    if let Some(result) = match_result {
+                        let outbound = DriverOutbound::Matched {
+                            offer_id: result.offer_id,
+                            job_id: result.job_id,
+                        };
+                        let text = serde_json::to_string(&outbound).map_err(|_| ())?;
+                        socket.send(Message::Text(text)).await.map_err(|_| ())?;
+                    }
+
+                    Ok(())
+                }
+            }
+        }
+        Message::Close(_) => Err(()),
+        Message::Ping(payload) => {
+            socket.send(Message::Pong(payload)).await.map_err(|_| ())
+        }
+        Message::Binary(_) | Message::Pong(_) => Ok(()),
+    }
 }

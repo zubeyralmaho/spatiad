@@ -16,7 +16,8 @@ Initial implementation scaffold is in place. The next milestone is wiring the en
 1. driver location updates
 2. nearest candidate lookup
 3. offer timeout/radius expansion
-4. match lock-in and webhook callback
+4. websocket reconnect replay for pending offers
+5. match lock-in and webhook callback
 
 ## Quick start (scaffold)
 

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use spatiad_h3::SpatialIndex;
-use spatiad_types::{Coordinates, DriverSnapshot, DriverStatus, JobRequest, OfferRecord, OfferStatus};
+use spatiad_types::{
+    Coordinates, DriverSnapshot, DriverStatus, JobRequest, MatchResult, OfferRecord, OfferStatus,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -10,6 +12,19 @@ use uuid::Uuid;
 pub enum CoreError {
     #[error("offer not found")]
     OfferNotFound,
+    #[error("job not found for offer")]
+    JobNotFound,
+    #[error("offer is not pending")]
+    OfferNotPending,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingDriverOffer {
+    pub offer_id: Uuid,
+    pub job_id: Uuid,
+    pub pickup: Coordinates,
+    pub dropoff: Option<Coordinates>,
+    pub expires_at: chrono::DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -99,6 +114,51 @@ impl Engine {
         let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
         offer.status = status;
         Ok(())
+    }
+
+    pub fn pending_offers_for_driver(&self, driver_id: Uuid) -> Vec<PendingDriverOffer> {
+        self.offers
+            .values()
+            .filter(|offer| offer.driver_id == driver_id && offer.status == OfferStatus::Pending)
+            .filter_map(|offer| {
+                self.jobs.get(&offer.job_id).map(|job| PendingDriverOffer {
+                    offer_id: offer.offer_id,
+                    job_id: offer.job_id,
+                    pickup: job.pickup,
+                    dropoff: job.dropoff,
+                    expires_at: offer.expires_at,
+                })
+            })
+            .collect()
+    }
+
+    pub fn handle_offer_response(
+        &mut self,
+        offer_id: Uuid,
+        accepted: bool,
+    ) -> Result<Option<MatchResult>, CoreError> {
+        let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
+        if offer.status != OfferStatus::Pending {
+            return Err(CoreError::OfferNotPending);
+        }
+
+        if accepted {
+            offer.status = OfferStatus::Accepted;
+
+            let job_id = offer.job_id;
+            let driver_id = offer.driver_id;
+            let offer_id = offer.offer_id;
+
+            return Ok(Some(MatchResult {
+                job_id,
+                driver_id,
+                offer_id,
+                matched_at: Utc::now(),
+            }));
+        }
+
+        offer.status = OfferStatus::Rejected;
+        Ok(None)
     }
 }
 

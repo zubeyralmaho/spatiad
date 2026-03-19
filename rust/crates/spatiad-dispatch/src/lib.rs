@@ -1,5 +1,6 @@
 use spatiad_core::Engine;
-use spatiad_types::{JobRequest, OfferRecord};
+use spatiad_core::PendingDriverOffer;
+use spatiad_types::{JobRequest, MatchResult, OfferRecord};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -7,6 +8,8 @@ use uuid::Uuid;
 pub enum DispatchError {
     #[error("no available driver in search radius")]
     NoAvailableDriver,
+    #[error("invalid offer response")]
+    InvalidOfferResponse,
 }
 
 #[derive(Debug)]
@@ -49,6 +52,20 @@ impl DispatchService {
         let _ = self
             .engine
             .mark_offer_status(offer_id, spatiad_types::OfferStatus::Cancelled);
+    }
+
+    pub fn pending_offers_for_driver(&self, driver_id: Uuid) -> Vec<PendingDriverOffer> {
+        self.engine.pending_offers_for_driver(driver_id)
+    }
+
+    pub fn handle_offer_response(
+        &mut self,
+        offer_id: Uuid,
+        accepted: bool,
+    ) -> Result<Option<MatchResult>, DispatchError> {
+        self.engine
+            .handle_offer_response(offer_id, accepted)
+            .map_err(|_| DispatchError::InvalidOfferResponse)
     }
 }
 

@@ -8,6 +8,7 @@ license.workspace = true
 axum.workspace = true
 chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 spatiad-dispatch = { path = "../spatiad-dispatch" }
 spatiad-types = { path = "../spatiad-types" }
 spatiad-ws = { path = "../spatiad-ws" }
