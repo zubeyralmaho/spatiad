@@ -48,28 +48,36 @@ pnpm -r build
 ## SDK job events pagination
 
 ```ts
-import { SpatiadClient } from "@spatiad/sdk";
+import { SpatiadApiError, SpatiadClient } from "@spatiad/sdk";
 
 const client = new SpatiadClient("http://localhost:3000");
 const controller = new AbortController();
 setTimeout(() => controller.abort(), 5000);
 
-const events = await client.getJobEventsAllPages({
-  jobId: "22222222-2222-2222-2222-222222222222",
-  limit: 25,
-  maxPages: 10,
-  maxEvents: 200,
-  kinds: ["offer_created", "match_confirmed"],
-  signal: controller.signal,
-  retry: {
-    maxAttempts: 4,
-    backoffMs: 100,
-    maxBackoffMs: 1500
-  },
-  onPage: (page, index) => {
-    console.log("fetched page", index, page.events.length);
-  }
-});
+try {
+  const events = await client.getJobEventsAllPages({
+    jobId: "22222222-2222-2222-2222-222222222222",
+    limit: 25,
+    maxPages: 10,
+    maxEvents: 200,
+    kinds: ["offer_created", "match_confirmed"],
+    signal: controller.signal,
+    retry: {
+      maxAttempts: 4,
+      backoffMs: 100,
+      maxBackoffMs: 1500
+    },
+    onPage: (page, index) => {
+      console.log("fetched page", index, page.events.length);
+    }
+  });
 
-console.log(events.length);
+  console.log(events.length);
+} catch (error) {
+  if (error instanceof SpatiadApiError) {
+    console.error(error.status, error.code, error.message);
+  } else {
+    throw error;
+  }
+}
 ```

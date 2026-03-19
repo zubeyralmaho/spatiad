@@ -10,6 +10,11 @@ export type RetryOptions = {
   retryOnStatuses?: number[];
 };
 
+export type ApiErrorBody = {
+  error?: string;
+  message?: string;
+};
+
 export type DispatchOfferRequest = {
   jobId: string;
   category: string;
@@ -61,6 +66,18 @@ export type JobEventsResponse = {
   next_before_cursor: string | null;
 };
 
+export class SpatiadApiError extends Error {
+  public readonly status: number;
+  public readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "SpatiadApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export class SpatiadClient {
   constructor(private readonly baseUrl: string) {}
 
@@ -81,7 +98,7 @@ export class SpatiadClient {
     }, request.retry);
 
     if (!response.ok) {
-      throw new Error(`dispatch offer failed with status ${response.status}`);
+      throw await this.createApiError("dispatch offer failed", response);
     }
 
     return response.json() as Promise<{ offer_id: string }>;
@@ -96,7 +113,7 @@ export class SpatiadClient {
       request.retry
     );
     if (!response.ok) {
-      throw new Error(`job events request failed with status ${response.status}`);
+      throw await this.createApiError("job events request failed", response);
     }
 
     return response.json() as Promise<JobEventsResponse>;
@@ -190,6 +207,18 @@ export class SpatiadClient {
     }
 
     throw lastError instanceof Error ? lastError : new Error("request failed after retries");
+  }
+
+  private async createApiError(prefix: string, response: Response): Promise<SpatiadApiError> {
+    let body: ApiErrorBody | undefined;
+    try {
+      body = await response.json() as ApiErrorBody;
+    } catch {
+      body = undefined;
+    }
+
+    const details = body?.message ?? `${prefix} with status ${response.status}`;
+    return new SpatiadApiError(details, response.status, body?.error);
   }
 }
 

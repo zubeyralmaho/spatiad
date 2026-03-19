@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { SpatiadClient } from "../dist/index.js";
+import { SpatiadApiError, SpatiadClient } from "../dist/index.js";
 
 function makeJsonResponse(status, payload) {
   return {
@@ -137,6 +137,32 @@ test("getJobEventsAllPages aborts during backoff wait", async () => {
 
     await assert.rejects(promise, /aborted/);
     assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getJobEvents exposes API error details as SpatiadApiError", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    makeJsonResponse(400, {
+      error: "invalid_query",
+      message: "invalid 'before' cursor; expected RFC3339 timestamp"
+    });
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    await assert.rejects(
+      () => client.getJobEvents({ jobId: "job-5", before: "bad" }),
+      (error) => {
+        assert.ok(error instanceof SpatiadApiError);
+        assert.equal(error.status, 400);
+        assert.equal(error.code, "invalid_query");
+        assert.match(error.message, /invalid 'before' cursor/);
+        return true;
+      }
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
