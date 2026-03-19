@@ -58,6 +58,11 @@ pub struct OfferCancelRequest {
     pub offer_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct JobCancelRequest {
+    pub job_id: Uuid,
+}
+
 #[derive(Debug, Serialize)]
 pub struct JobStatusResponse {
     pub job_id: Uuid,
@@ -111,6 +116,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/driver/upsert", post(upsert_driver))
         .route("/api/v1/dispatch/offer", post(dispatch_offer))
         .route("/api/v1/dispatch/cancel", post(cancel_offer))
+    .route("/api/v1/dispatch/job/cancel", post(cancel_job))
         .route("/api/v1/dispatch/job/:job_id", get(dispatch_job_status))
         .route("/api/v1/dispatch/job/:job_id/events", get(dispatch_job_events))
         .route("/api/v1/stream/driver/:driver_id", get(driver_ws))
@@ -185,6 +191,23 @@ async fn cancel_offer(
     axum::http::StatusCode::OK
 }
 
+async fn cancel_job(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(payload): Json<JobCancelRequest>,
+) -> impl IntoResponse {
+    if !is_dispatcher_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED;
+    }
+
+    let mut dispatch = state.dispatch.lock().await;
+    if !dispatch.cancel_job(payload.job_id) {
+        return StatusCode::NOT_FOUND;
+    }
+
+    StatusCode::OK
+}
+
 async fn dispatch_job_status(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -213,6 +236,12 @@ async fn dispatch_job_status(
         JobDispatchState::Searching => JobStatusResponse {
             job_id,
             state: "searching",
+            matched_driver_id: None,
+            matched_offer_id: None,
+        },
+        JobDispatchState::Cancelled => JobStatusResponse {
+            job_id,
+            state: "cancelled",
             matched_driver_id: None,
             matched_offer_id: None,
         },
@@ -736,6 +765,13 @@ fn map_job_event(event: JobEventRecord) -> JobEventResponse {
             driver_id: None,
             status: None,
         },
+        JobEventKind::JobCancelled => JobEventResponse {
+            at,
+            kind: "job_cancelled",
+            offer_id: None,
+            driver_id: None,
+            status: Some("cancelled"),
+        },
         JobEventKind::OfferCreated { offer_id, driver_id } => JobEventResponse {
             at,
             kind: "offer_created",
@@ -835,6 +871,7 @@ fn parse_job_event_kinds(raw: Option<&str>) -> Result<Option<Vec<JobEventFilterK
 
         let kind = match token {
             "job_registered" => JobEventFilterKind::JobRegistered,
+            "job_cancelled" => JobEventFilterKind::JobCancelled,
             "offer_created" => JobEventFilterKind::OfferCreated,
             "offer_expired" => JobEventFilterKind::OfferExpired,
             "offer_cancelled" => JobEventFilterKind::OfferCancelled,
@@ -1097,6 +1134,47 @@ mod tests {
         .0;
 
         assert!(!response.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_job_returns_not_found_for_unknown_job() {
+        let state = seeded_api_state(Uuid::new_v4(), Uuid::new_v4());
+        let status = cancel_job(
+            State(state),
+            HeaderMap::new(),
+            Json(JobCancelRequest {
+                job_id: Uuid::new_v4(),
+            }),
+        )
+        .await
+        .into_response()
+        .status();
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn cancel_job_transitions_status_to_cancelled() {
+        let job_id = Uuid::new_v4();
+        let driver_id = Uuid::new_v4();
+        let state = seeded_api_state(job_id, driver_id);
+
+        let status = cancel_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(JobCancelRequest { job_id }),
+        )
+        .await
+        .into_response()
+        .status();
+
+        assert_eq!(status, StatusCode::OK);
+
+        let dispatch = state.dispatch.lock().await;
+        assert!(matches!(
+            dispatch.job_dispatch_state(job_id),
+            JobDispatchState::Cancelled
+        ));
     }
 
     fn seeded_api_state(job_id: Uuid, driver_id: Uuid) -> ApiState {

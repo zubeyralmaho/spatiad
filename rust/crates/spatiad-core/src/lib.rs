@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use spatiad_h3::SpatialIndex;
@@ -45,6 +45,7 @@ pub enum JobDispatchState {
     UnknownJob,
     Pending,
     Searching,
+    Cancelled,
     Matched {
         driver_id: Uuid,
         offer_id: Uuid,
@@ -55,6 +56,7 @@ pub enum JobDispatchState {
 #[derive(Debug, Clone)]
 pub enum JobEventKind {
     JobRegistered,
+    JobCancelled,
     OfferCreated { offer_id: Uuid, driver_id: Uuid },
     OfferExpired { offer_id: Uuid, driver_id: Uuid },
     OfferCancelled { offer_id: Uuid, driver_id: Uuid },
@@ -67,6 +69,7 @@ pub enum JobEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JobEventFilterKind {
     JobRegistered,
+    JobCancelled,
     OfferCreated,
     OfferExpired,
     OfferCancelled,
@@ -95,6 +98,7 @@ pub struct Engine {
     drivers: HashMap<Uuid, DriverSnapshot>,
     jobs: HashMap<Uuid, JobRequest>,
     offers: HashMap<Uuid, OfferRecord>,
+    cancelled_jobs: HashSet<Uuid>,
     job_events: HashMap<Uuid, Vec<JobEventRecord>>,
     job_event_sequences: HashMap<Uuid, u64>,
 }
@@ -108,6 +112,7 @@ impl Engine {
             drivers: HashMap::new(),
             jobs: HashMap::new(),
             offers: HashMap::new(),
+            cancelled_jobs: HashSet::new(),
             job_events: HashMap::new(),
             job_event_sequences: HashMap::new(),
         }
@@ -135,7 +140,39 @@ impl Engine {
     pub fn register_job(&mut self, job: JobRequest) {
         let job_id = job.job_id;
         self.jobs.insert(job_id, job);
+        self.cancelled_jobs.remove(&job_id);
         self.push_job_event(job_id, JobEventKind::JobRegistered);
+    }
+
+    pub fn cancel_job(&mut self, job_id: Uuid) -> bool {
+        if !self.jobs.contains_key(&job_id) {
+            return false;
+        }
+
+        let was_newly_cancelled = self.cancelled_jobs.insert(job_id);
+        let mut cancelled_offers = Vec::new();
+        for offer in self.offers.values_mut() {
+            if offer.job_id == job_id && offer.status == OfferStatus::Pending {
+                offer.status = OfferStatus::Cancelled;
+                cancelled_offers.push((offer.offer_id, offer.driver_id));
+            }
+        }
+
+        for (offer_id, driver_id) in cancelled_offers {
+            self.push_job_event(
+                job_id,
+                JobEventKind::OfferCancelled {
+                    offer_id,
+                    driver_id,
+                },
+            );
+        }
+
+        if was_newly_cancelled {
+            self.push_job_event(job_id, JobEventKind::JobCancelled);
+        }
+
+        true
     }
 
     pub fn create_offer(&mut self, job_id: Uuid, driver_id: Uuid, timeout_seconds: u64) -> OfferRecord {
@@ -288,6 +325,10 @@ impl Engine {
     pub fn create_next_offer_for_job(&mut self, job_id: Uuid) -> Option<OfferRecord> {
         let job = self.jobs.get(&job_id)?.clone();
 
+        if self.cancelled_jobs.contains(&job_id) {
+            return None;
+        }
+
         if self
             .offers
             .values()
@@ -369,6 +410,10 @@ impl Engine {
                 driver_id: accepted.driver_id,
                 offer_id: accepted.offer_id,
             };
+        }
+
+        if self.cancelled_jobs.contains(&job_id) {
+            return JobDispatchState::Cancelled;
         }
 
         if offers.iter().any(|offer| offer.status == OfferStatus::Pending) {
@@ -865,6 +910,50 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert!(second[0].sequence < first[0].sequence);
     }
+
+    #[test]
+    fn cancelled_job_is_reported_as_cancelled() {
+        let mut engine = Engine::new(8);
+        let driver_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+
+        engine.upsert_driver_location(
+            driver_id,
+            "tow_truck".to_string(),
+            Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            DriverStatus::Available,
+        );
+
+        engine.register_job(JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: Utc::now(),
+        });
+
+        let _ = engine.create_offer(job_id, driver_id, 30);
+        assert!(engine.cancel_job(job_id));
+
+        assert!(matches!(
+            engine.job_dispatch_state(job_id),
+            JobDispatchState::Cancelled
+        ));
+        assert!(engine.create_next_offer_for_job(job_id).is_none());
+        assert!(engine.job_events(job_id, 20).iter().any(|event| matches!(
+            event.kind,
+            JobEventKind::JobCancelled
+        )));
+    }
 }
 
 impl Engine {
@@ -909,6 +998,7 @@ fn haversine_km(a: Coordinates, b: Coordinates) -> f64 {
 fn event_filter_kind(kind: &JobEventKind) -> JobEventFilterKind {
     match kind {
         JobEventKind::JobRegistered => JobEventFilterKind::JobRegistered,
+        JobEventKind::JobCancelled => JobEventFilterKind::JobCancelled,
         JobEventKind::OfferCreated { .. } => JobEventFilterKind::OfferCreated,
         JobEventKind::OfferExpired { .. } => JobEventFilterKind::OfferExpired,
         JobEventKind::OfferCancelled { .. } => JobEventFilterKind::OfferCancelled,

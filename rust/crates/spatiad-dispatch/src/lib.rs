@@ -74,6 +74,10 @@ impl DispatchService {
             .mark_offer_status(offer_id, spatiad_types::OfferStatus::Cancelled);
     }
 
+    pub fn cancel_job(&mut self, job_id: Uuid) -> bool {
+        self.engine.cancel_job(job_id)
+    }
+
     pub fn pending_offers_for_driver(&self, driver_id: Uuid) -> Vec<PendingDriverOffer> {
         self.engine.pending_offers_for_driver(driver_id)
     }

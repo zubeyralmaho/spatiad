@@ -100,6 +100,21 @@ Request:
 
 Response: 200 OK
 
+## POST /api/v1/dispatch/job/cancel
+
+Cancels dispatch for a job and marks all pending offers for that job as cancelled.
+
+Request:
+
+```json
+{ "job_id": "uuid" }
+```
+
+Response:
+
+- `200 OK` when job exists and is cancelled
+- `404 Not Found` when `job_id` is unknown
+
 ## GET /api/v1/dispatch/job/{job_id}
 
 Returns current dispatch state for the given job.
@@ -120,6 +135,7 @@ Possible `state` values:
 - `unknown`
 - `pending`
 - `searching`
+- `cancelled`
 - `matched`
 - `exhausted`
 
@@ -133,7 +149,7 @@ Query params:
 - `cursor` (optional): opaque pagination cursor in `<rfc3339>|<sequence>` format
 - `before` (optional): RFC3339 timestamp cursor (legacy compatibility mode)
 - `kinds` (optional): comma-separated event kind filter
-  - Supported values: `job_registered`, `offer_created`, `offer_expired`, `offer_cancelled`, `offer_rejected`, `offer_accepted`, `match_confirmed`, `offer_status_updated`
+  - Supported values: `job_registered`, `job_cancelled`, `offer_created`, `offer_expired`, `offer_cancelled`, `offer_rejected`, `offer_accepted`, `match_confirmed`, `offer_status_updated`
 
 Response:
 
