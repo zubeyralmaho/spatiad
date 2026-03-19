@@ -61,6 +61,7 @@ Behavior notes:
 Webhook notes:
 
 - If `SPATIAD_WEBHOOK_URL` is set, an outbound callback is sent after a successful driver acceptance.
+- Delivery retry policy (current): up to 3 attempts with exponential backoff (200ms, 400ms, 800ms).
 - Callback payload:
 
 ```json

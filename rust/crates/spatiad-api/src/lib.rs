@@ -14,6 +14,7 @@ use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult};
 use spatiad_ws::{DriverInbound, DriverOutbound};
 use tokio::sync::Mutex;
+use tokio::time::{sleep, timeout, Duration};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -135,8 +136,26 @@ async fn handle_driver_session(state: ApiState, driver_id: Uuid, mut socket: Web
         return;
     }
 
+    // Periodically flush expired offers even when the driver is idle.
+    let tick_every = Duration::from_secs(1);
+
     loop {
-        let Some(message_result) = socket.recv().await else {
+        let message_result = timeout(tick_every, socket.recv()).await;
+
+        let maybe_message = match message_result {
+            Ok(value) => value,
+            Err(_) => {
+                if flush_expired_offers(&state, driver_id, &mut socket)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+        };
+
+        let Some(message_result) = maybe_message else {
             break;
         };
 
@@ -278,16 +297,25 @@ async fn send_match_webhook(webhook_url: &str, result: &MatchResult) -> Result<(
         matched_at: result.matched_at,
     };
 
-    let response = reqwest::Client::new()
-        .post(webhook_url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|_| ())?;
+    let client = reqwest::Client::new();
+    let mut backoff = Duration::from_millis(200);
 
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        Err(())
+    for attempt in 1..=3 {
+        let response = client
+            .post(webhook_url)
+            .json(&payload)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ if attempt < 3 => {
+                sleep(backoff).await;
+                backoff *= 2;
+            }
+            _ => return Err(()),
+        }
     }
+
+    Err(())
 }

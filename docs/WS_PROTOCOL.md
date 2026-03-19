@@ -25,6 +25,7 @@ Current implementation includes a basic session loop:
 
 If a driver disconnects while offers are still pending, those offers remain in-memory and are flushed on the next successful reconnect of the same `driver_id`.
 Any pending offer that already exceeded `expires_at` is marked expired and emitted as `offer_expired` instead of `offer`.
+While connected, the session loop runs a periodic 1-second expiration tick and emits `offer_expired` without waiting for a new inbound message.
 
 ## Outbound messages (spatiad -> driver)
 
