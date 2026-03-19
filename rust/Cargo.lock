@@ -1379,6 +1379,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spatiad-core",
  "spatiad-dispatch",
  "spatiad-types",
  "spatiad-ws",
