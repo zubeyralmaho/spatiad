@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::ws::Message,
@@ -13,14 +13,15 @@ use serde::{Deserialize, Serialize};
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult};
 use spatiad_ws::{DriverInbound, DriverOutbound};
-use tokio::sync::Mutex;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::{interval, sleep, Duration};
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct ApiState {
     pub dispatch: Arc<Mutex<DispatchService>>,
     pub webhook_url: Option<String>,
+    pub sessions: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<DriverOutbound>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,45 +133,61 @@ async fn driver_ws(
 }
 
 async fn handle_driver_session(state: ApiState, driver_id: Uuid, mut socket: WebSocket) {
+    let (session_tx, mut session_rx) = mpsc::unbounded_channel::<DriverOutbound>();
+    {
+        let mut sessions = state.sessions.lock().await;
+        sessions.insert(driver_id, session_tx);
+    }
+
     if replay_pending_offers(&state, driver_id, &mut socket).await.is_err() {
+        let mut sessions = state.sessions.lock().await;
+        sessions.remove(&driver_id);
         return;
     }
 
-    // Periodically flush expired offers even when the driver is idle.
-    let tick_every = Duration::from_secs(1);
+    let mut ticker = interval(Duration::from_secs(1));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        let message_result = timeout(tick_every, socket.recv()).await;
-
-        let maybe_message = match message_result {
-            Ok(value) => value,
-            Err(_) => {
+        tokio::select! {
+            _ = ticker.tick() => {
                 if flush_expired_offers(&state, driver_id, &mut socket)
                     .await
                     .is_err()
                 {
                     break;
                 }
-                continue;
             }
-        };
+            outbound = session_rx.recv() => {
+                let Some(outbound) = outbound else {
+                    break;
+                };
+                if send_outbound(&mut socket, &outbound).await.is_err() {
+                    break;
+                }
+            }
+            inbound = socket.recv() => {
+                let Some(message_result) = inbound else {
+                    break;
+                };
 
-        let Some(message_result) = maybe_message else {
-            break;
-        };
+                let message = match message_result {
+                    Ok(value) => value,
+                    Err(_) => break,
+                };
 
-        let message = match message_result {
-            Ok(value) => value,
-            Err(_) => break,
-        };
-
-        if handle_driver_message(&state, driver_id, &mut socket, message)
-            .await
-            .is_err()
-        {
-            break;
+                if handle_driver_message(&state, driver_id, &mut socket, message)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
     }
+
+    let mut sessions = state.sessions.lock().await;
+    sessions.remove(&driver_id);
 }
 
 async fn replay_pending_offers(
@@ -194,8 +211,7 @@ async fn replay_pending_offers(
             expires_at: offer.expires_at,
         };
 
-        let text = serde_json::to_string(&payload).map_err(|_| ())?;
-        socket.send(Message::Text(text)).await.map_err(|_| ())?;
+        send_outbound(socket, &payload).await?;
     }
 
     Ok(())
@@ -213,8 +229,7 @@ async fn flush_expired_offers(
 
     for offer_id in expired_offer_ids {
         let payload = DriverOutbound::OfferExpired { offer_id };
-        let text = serde_json::to_string(&payload).map_err(|_| ())?;
-        socket.send(Message::Text(text)).await.map_err(|_| ())?;
+        send_outbound(socket, &payload).await?;
     }
 
     Ok(())
@@ -259,8 +274,9 @@ async fn handle_driver_message(
                             offer_id: result.offer_id,
                             job_id: result.job_id,
                         };
-                        let text = serde_json::to_string(&outbound).map_err(|_| ())?;
-                        socket.send(Message::Text(text)).await.map_err(|_| ())?;
+                        send_outbound(socket, &outbound).await?;
+
+                        notify_competing_cancellations(state, result.job_id).await;
 
                         if let Some(webhook_url) = &state.webhook_url {
                             let _ = send_match_webhook(webhook_url, &result).await;
@@ -276,6 +292,32 @@ async fn handle_driver_message(
             socket.send(Message::Pong(payload)).await.map_err(|_| ())
         }
         Message::Binary(_) | Message::Pong(_) => Ok(()),
+    }
+}
+
+async fn send_outbound(socket: &mut WebSocket, payload: &DriverOutbound) -> Result<(), ()> {
+    let text = serde_json::to_string(payload).map_err(|_| ())?;
+    socket.send(Message::Text(text)).await.map_err(|_| ())
+}
+
+async fn notify_competing_cancellations(state: &ApiState, job_id: Uuid) {
+    let cancelled = {
+        let dispatch = state.dispatch.lock().await;
+        dispatch.cancelled_offers_for_job(job_id)
+    };
+
+    if cancelled.is_empty() {
+        return;
+    }
+
+    let sessions = state.sessions.lock().await;
+    for item in cancelled {
+        if let Some(tx) = sessions.get(&item.driver_id) {
+            let _ = tx.send(DriverOutbound::OfferCancelled {
+                offer_id: item.offer_id,
+                job_id,
+            });
+        }
     }
 }
 

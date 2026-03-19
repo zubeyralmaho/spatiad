@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use spatiad_api::{router, ApiState};
@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let state = ApiState {
         dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
         webhook_url: std::env::var("SPATIAD_WEBHOOK_URL").ok(),
+        sessions: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = router(state);

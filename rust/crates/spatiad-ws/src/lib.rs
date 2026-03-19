@@ -30,6 +30,10 @@ pub enum DriverOutbound {
     OfferExpired {
         offer_id: Uuid,
     },
+    OfferCancelled {
+        offer_id: Uuid,
+        job_id: Uuid,
+    },
     Matched {
         offer_id: Uuid,
         job_id: Uuid,

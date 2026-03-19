@@ -27,6 +27,12 @@ pub struct PendingDriverOffer {
     pub expires_at: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CancelledDriverOffer {
+    pub driver_id: Uuid,
+    pub offer_id: Uuid,
+}
+
 #[derive(Debug)]
 pub struct Engine {
     spatial: SpatialIndex,
@@ -151,6 +157,17 @@ impl Engine {
         }
 
         expired
+    }
+
+    pub fn cancelled_offers_for_job(&self, job_id: Uuid) -> Vec<CancelledDriverOffer> {
+        self.offers
+            .values()
+            .filter(|offer| offer.job_id == job_id && offer.status == OfferStatus::Cancelled)
+            .map(|offer| CancelledDriverOffer {
+                driver_id: offer.driver_id,
+                offer_id: offer.offer_id,
+            })
+            .collect()
     }
 
     pub fn handle_offer_response(
