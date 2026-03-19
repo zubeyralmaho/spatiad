@@ -309,3 +309,66 @@ test("getJobEvents sends dispatcher header token in header mode", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("request-level dispatcher token overrides client token", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedHeaders;
+
+  globalThis.fetch = async (_url, init) => {
+    observedHeaders = init?.headers;
+    return makeJsonResponse(202, { offer_id: "offer-auth-override" });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000", {
+      dispatcherToken: "client-token"
+    });
+
+    await client.createOffer({
+      jobId: "job-auth-override-1",
+      category: "tow_truck",
+      pickup: { latitude: 38.433, longitude: 26.768 },
+      dropoff: { latitude: 38.44, longitude: 26.78 },
+      initialRadiusKm: 1,
+      maxRadiusKm: 5,
+      timeoutSeconds: 20,
+      dispatcherToken: "request-token"
+    });
+
+    assert.equal(observedHeaders.Authorization, "Bearer request-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("request-level auth mode overrides client mode", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedHeaders;
+
+  globalThis.fetch = async (_url, init) => {
+    observedHeaders = init?.headers;
+    return makeJsonResponse(200, {
+      job_id: "job-auth-override-2",
+      events: [],
+      next_cursor: null,
+      next_before_cursor: null
+    });
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000", {
+      dispatcherToken: "dispatcher-secret",
+      dispatcherAuthMode: "header"
+    });
+
+    await client.getJobEvents({
+      jobId: "job-auth-override-2",
+      dispatcherAuthMode: "bearer"
+    });
+
+    assert.equal(observedHeaders.Authorization, "Bearer dispatcher-secret");
+    assert.equal(observedHeaders["x-spatiad-dispatcher-token"], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

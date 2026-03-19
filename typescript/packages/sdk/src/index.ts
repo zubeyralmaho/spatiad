@@ -17,6 +17,11 @@ export type SpatiadClientOptions = {
   dispatcherAuthMode?: DispatcherAuthMode;
 };
 
+export type DispatcherAuthOverride = {
+  dispatcherToken?: string;
+  dispatcherAuthMode?: DispatcherAuthMode;
+};
+
 export type ApiErrorBody = {
   error?: string;
   message?: string;
@@ -33,7 +38,7 @@ export type DispatchOfferRequest = {
   timeoutSeconds: number;
   signal?: AbortSignal;
   retry?: RetryOptions;
-};
+} & DispatcherAuthOverride;
 
 export type JobEventKind =
   | "job_registered"
@@ -53,7 +58,7 @@ export type GetJobEventsRequest = {
   kinds?: JobEventKind[];
   signal?: AbortSignal;
   retry?: RetryOptions;
-};
+} & DispatcherAuthOverride;
 
 export type GetJobEventsAllPagesRequest = Omit<GetJobEventsRequest, "before"> & {
   maxPages?: number;
@@ -101,7 +106,10 @@ export class SpatiadClient {
   async createOffer(request: DispatchOfferRequest): Promise<{ offer_id: string }> {
     const response = await this.fetchWithRetry(`${this.baseUrl}/api/v1/dispatch/offer`, {
       method: "POST",
-      headers: this.withDispatcherHeaders({ "content-type": "application/json" }),
+      headers: this.withDispatcherHeaders(
+        { "content-type": "application/json" },
+        request
+      ),
       signal: request.signal,
       body: JSON.stringify({
         job_id: request.jobId,
@@ -128,7 +136,7 @@ export class SpatiadClient {
       url,
       {
         method: "GET",
-        headers: this.withDispatcherHeaders(),
+        headers: this.withDispatcherHeaders({}, request),
         signal: request.signal
       },
       request.retry
@@ -156,6 +164,8 @@ export class SpatiadClient {
         limit: request.limit,
         cursor,
         kinds: request.kinds,
+        dispatcherToken: request.dispatcherToken,
+        dispatcherAuthMode: request.dispatcherAuthMode,
         signal: request.signal,
         retry: request.retry
       });
@@ -201,14 +211,18 @@ export class SpatiadClient {
     return `${this.baseUrl}/api/v1/dispatch/job/${request.jobId}/events${suffix ? `?${suffix}` : ""}`;
   }
 
-  private withDispatcherHeaders(base: Record<string, string> = {}): Record<string, string> {
+  private withDispatcherHeaders(
+    base: Record<string, string> = {},
+    override: DispatcherAuthOverride = {}
+  ): Record<string, string> {
     const headers = { ...base };
-    const token = this.options.dispatcherToken;
+    const token = override.dispatcherToken ?? this.options.dispatcherToken;
     if (!token) {
       return headers;
     }
 
-    if ((this.options.dispatcherAuthMode ?? "bearer") === "header") {
+    const mode = override.dispatcherAuthMode ?? this.options.dispatcherAuthMode ?? "bearer";
+    if (mode === "header") {
       headers["x-spatiad-dispatcher-token"] = token;
     } else {
       headers.Authorization = `Bearer ${token}`;

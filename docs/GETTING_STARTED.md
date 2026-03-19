@@ -75,6 +75,12 @@ try {
     }
   });
 
+  await client.getJobEvents({
+    jobId: "22222222-2222-2222-2222-222222222222",
+    dispatcherToken: "request-scoped-token",
+    dispatcherAuthMode: "header"
+  });
+
   console.log(events.length);
 } catch (error) {
   if (error instanceof SpatiadApiError) {
