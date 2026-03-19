@@ -159,7 +159,33 @@ test("getJobEvents exposes API error details as SpatiadApiError", async () => {
         assert.ok(error instanceof SpatiadApiError);
         assert.equal(error.status, 400);
         assert.equal(error.code, "invalid_query");
+        assert.equal(error.retryable, false);
         assert.match(error.message, /invalid 'before' cursor/);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getJobEvents marks transient statuses as retryable", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    makeJsonResponse(503, {
+      error: "service_unavailable",
+      message: "temporary outage"
+    });
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    await assert.rejects(
+      () => client.getJobEvents({ jobId: "job-6", retry: { maxAttempts: 1 } }),
+      (error) => {
+        assert.ok(error instanceof SpatiadApiError);
+        assert.equal(error.status, 503);
+        assert.equal(error.retryable, true);
         return true;
       }
     );

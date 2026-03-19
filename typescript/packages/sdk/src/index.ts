@@ -69,12 +69,14 @@ export type JobEventsResponse = {
 export class SpatiadApiError extends Error {
   public readonly status: number;
   public readonly code?: string;
+  public readonly retryable: boolean;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, code?: string, retryable?: boolean) {
     super(message);
     this.name = "SpatiadApiError";
     this.status = status;
     this.code = code;
+    this.retryable = retryable ?? isRetryableStatus(status);
   }
 }
 
@@ -220,6 +222,10 @@ export class SpatiadClient {
     const details = body?.message ?? `${prefix} with status ${response.status}`;
     return new SpatiadApiError(details, response.status, body?.error);
   }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
 }
 
 function waitWithSignal(ms: number, signal?: AbortSignal): Promise<void> {

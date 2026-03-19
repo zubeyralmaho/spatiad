@@ -75,7 +75,7 @@ try {
   console.log(events.length);
 } catch (error) {
   if (error instanceof SpatiadApiError) {
-    console.error(error.status, error.code, error.message);
+    console.error(error.status, error.code, error.retryable, error.message);
   } else {
     throw error;
   }
