@@ -372,3 +372,78 @@ test("request-level auth mode overrides client mode", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("upsertDriver sends mapped payload with dispatcher auth", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedInit;
+
+  globalThis.fetch = async (_url, init) => {
+    observedInit = init;
+    return makeJsonResponse(200, {});
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000", {
+      dispatcherToken: "dispatcher-secret"
+    });
+
+    await client.upsertDriver({
+      driverId: "driver-1",
+      category: "tow_truck",
+      status: "Available",
+      position: { latitude: 38.433, longitude: 26.768 }
+    });
+
+    assert.equal(observedInit.headers.Authorization, "Bearer dispatcher-secret");
+    assert.deepEqual(JSON.parse(observedInit.body), {
+      driver_id: "driver-1",
+      category: "tow_truck",
+      status: "Available",
+      position: { latitude: 38.433, longitude: 26.768 }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("cancelOffer posts offer_id payload", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedInit;
+
+  globalThis.fetch = async (_url, init) => {
+    observedInit = init;
+    return makeJsonResponse(200, {});
+  };
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    await client.cancelOffer({ offerId: "offer-1" });
+
+    assert.deepEqual(JSON.parse(observedInit.body), { offer_id: "offer-1" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getJobStatus returns typed response", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    makeJsonResponse(200, {
+      job_id: "job-status-1",
+      state: "matched",
+      matched_driver_id: "driver-1",
+      matched_offer_id: "offer-1"
+    });
+
+  try {
+    const client = new SpatiadClient("http://localhost:3000");
+    const status = await client.getJobStatus({ jobId: "job-status-1" });
+
+    assert.equal(status.state, "matched");
+    assert.equal(status.matched_driver_id, "driver-1");
+    assert.equal(status.matched_offer_id, "offer-1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

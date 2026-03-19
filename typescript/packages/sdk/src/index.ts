@@ -40,8 +40,41 @@ export type DispatchOfferRequest = {
   retry?: RetryOptions;
 } & DispatcherAuthOverride;
 
+export type DriverStatus = "Offline" | "Available" | "Busy";
+
+export type UpsertDriverRequest = {
+  driverId: string;
+  category: string;
+  status: DriverStatus;
+  position: Coordinates;
+  signal?: AbortSignal;
+  retry?: RetryOptions;
+} & DispatcherAuthOverride;
+
+export type CancelOfferRequest = {
+  offerId: string;
+  signal?: AbortSignal;
+  retry?: RetryOptions;
+} & DispatcherAuthOverride;
+
+export type GetJobStatusRequest = {
+  jobId: string;
+  signal?: AbortSignal;
+  retry?: RetryOptions;
+} & DispatcherAuthOverride;
+
+export type JobDispatchState = "unknown" | "pending" | "searching" | "matched" | "exhausted";
+
+export type JobStatusResponse = {
+  job_id: string;
+  state: JobDispatchState;
+  matched_driver_id: string | null;
+  matched_offer_id: string | null;
+};
+
 export type JobEventKind =
   | "job_registered"
+  | "job_cancelled"
   | "offer_created"
   | "offer_expired"
   | "offer_cancelled"
@@ -127,6 +160,61 @@ export class SpatiadClient {
     }
 
     return response.json() as Promise<{ offer_id: string }>;
+  }
+
+  async upsertDriver(request: UpsertDriverRequest): Promise<void> {
+    const response = await this.fetchWithRetry(`${this.baseUrl}/api/v1/driver/upsert`, {
+      method: "POST",
+      headers: this.withDispatcherHeaders(
+        { "content-type": "application/json" },
+        request
+      ),
+      signal: request.signal,
+      body: JSON.stringify({
+        driver_id: request.driverId,
+        category: request.category,
+        status: request.status,
+        position: request.position
+      })
+    }, request.retry);
+
+    if (!response.ok) {
+      throw await this.createApiError("driver upsert failed", response);
+    }
+  }
+
+  async cancelOffer(request: CancelOfferRequest): Promise<void> {
+    const response = await this.fetchWithRetry(`${this.baseUrl}/api/v1/dispatch/cancel`, {
+      method: "POST",
+      headers: this.withDispatcherHeaders(
+        { "content-type": "application/json" },
+        request
+      ),
+      signal: request.signal,
+      body: JSON.stringify({ offer_id: request.offerId })
+    }, request.retry);
+
+    if (!response.ok) {
+      throw await this.createApiError("cancel offer failed", response);
+    }
+  }
+
+  async getJobStatus(request: GetJobStatusRequest): Promise<JobStatusResponse> {
+    const response = await this.fetchWithRetry(
+      `${this.baseUrl}/api/v1/dispatch/job/${request.jobId}`,
+      {
+        method: "GET",
+        headers: this.withDispatcherHeaders({}, request),
+        signal: request.signal
+      },
+      request.retry
+    );
+
+    if (!response.ok) {
+      throw await this.createApiError("job status request failed", response);
+    }
+
+    return response.json() as Promise<JobStatusResponse>;
   }
 
   async getJobEvents(request: GetJobEventsRequest): Promise<JobEventsResponse> {

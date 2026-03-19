@@ -58,6 +58,13 @@ const controller = new AbortController();
 setTimeout(() => controller.abort(), 5000);
 
 try {
+  await client.upsertDriver({
+    driverId: "44444444-4444-4444-4444-444444444444",
+    category: "tow_truck",
+    status: "Available",
+    position: { latitude: 38.433, longitude: 26.768 }
+  });
+
   const events = await client.getJobEventsAllPages({
     jobId: "22222222-2222-2222-2222-222222222222",
     limit: 25,
@@ -80,6 +87,11 @@ try {
     dispatcherToken: "request-scoped-token",
     dispatcherAuthMode: "header"
   });
+
+  const jobStatus = await client.getJobStatus({
+    jobId: "22222222-2222-2222-2222-222222222222"
+  });
+  console.log(jobStatus.state);
 
   console.log(events.length);
 } catch (error) {
