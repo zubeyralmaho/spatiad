@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>spatiad</strong><br>
+  <strong>spatiad (spatia*-daemon)</strong><br>
   Open-source spatial dispatch engine for real-time fleets
 </p>
 
