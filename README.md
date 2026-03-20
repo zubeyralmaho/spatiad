@@ -90,6 +90,10 @@ Detailed deployment steps are in docs/DEPLOYMENT.md.
 
 Release and publishing flow is documented in docs/PUBLISHING.md.
 
+## Roadmap
+
+See [ROADMAP.md](./ROADMAP.md) for the long-term vision covering durability, intelligent matching, horizontal scaling, and more. Join the [vision discussion](https://github.com/zubeyralmaho/spatiad/discussions) to shape the direction.
+
 ## Documentation
 
 Primary references:
