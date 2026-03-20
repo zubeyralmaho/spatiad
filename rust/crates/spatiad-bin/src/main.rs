@@ -6,7 +6,7 @@ use spatiad_core::Engine;
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus};
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -31,6 +31,11 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(30);
+    let webhook_timeout_ms = std::env::var("SPATIAD_WEBHOOK_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|value| value.clamp(100, 60_000))
+        .unwrap_or(3_000);
 
     // Seed one driver for immediate manual tests against /dispatch/offer.
     engine.upsert_driver_location(
@@ -47,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
         dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
         webhook_url: std::env::var("SPATIAD_WEBHOOK_URL").ok(),
         webhook_secret: std::env::var("SPATIAD_WEBHOOK_SECRET").ok(),
+        webhook_timeout_ms,
         driver_token: std::env::var("SPATIAD_DRIVER_TOKEN").ok(),
         dispatcher_token: std::env::var("SPATIAD_DISPATCHER_TOKEN").ok(),
         dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(
@@ -69,10 +75,42 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("invalid bind address")?;
 
-    info!(%addr, "starting spatiad API");
+    info!(%addr, webhook_timeout_ms, "starting spatiad API");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            warn!(%error, "failed to listen for ctrl_c signal");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!(%error, "failed to listen for terminate signal");
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("shutdown signal received");
 }

@@ -32,6 +32,7 @@ pub struct ApiState {
     pub dispatch: Arc<Mutex<DispatchService>>,
     pub webhook_url: Option<String>,
     pub webhook_secret: Option<String>,
+    pub webhook_timeout_ms: u64,
     pub driver_token: Option<String>,
     pub dispatcher_token: Option<String>,
     pub dispatch_rate_limiter: Arc<Mutex<SlidingWindowRateLimiter>>,
@@ -822,6 +823,7 @@ async fn handle_driver_message(
                             let webhook_result = send_match_webhook(
                                 webhook_url,
                                 state.webhook_secret.as_deref(),
+                                state.webhook_timeout_ms,
                                 &result,
                             )
                             .await;
@@ -947,6 +949,7 @@ struct MatchWebhookPayload {
 async fn send_match_webhook(
     webhook_url: &str,
     webhook_secret: Option<&str>,
+    webhook_timeout_ms: u64,
     result: &MatchResult,
 ) -> Result<(), ()> {
     let payload = MatchWebhookPayload {
@@ -961,7 +964,10 @@ async fn send_match_webhook(
     let timestamp = Utc::now().timestamp().to_string();
     let nonce = Uuid::new_v4().to_string();
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(webhook_timeout_ms.max(100)))
+        .build()
+        .map_err(|_| ())?;
     let mut backoff = Duration::from_millis(200);
 
     for attempt in 1..=3 {
@@ -1521,6 +1527,7 @@ mod tests {
             dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
             webhook_url: None,
             webhook_secret: None,
+            webhook_timeout_ms: 3_000,
             driver_token: None,
             dispatcher_token: None,
             dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(1000, 60))),

@@ -24,6 +24,7 @@ mod tests {
             dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
             webhook_url: None,
             webhook_secret: None,
+            webhook_timeout_ms: 3_000,
             driver_token: None,
             dispatcher_token: None,
             dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(240, 60))),

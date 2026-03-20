@@ -90,6 +90,7 @@ services:
       SPATIAD_H3_RESOLUTION: 8
       SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN: 240
       SPATIAD_WS_RECONNECT_MAX_PER_MIN: 30
+      SPATIAD_WEBHOOK_TIMEOUT_MS: 3000
       # Optional webhook configuration
       # SPATIAD_WEBHOOK_URL: http://webhook-receiver:4000/webhooks/spatiad
       # SPATIAD_WEBHOOK_SECRET: your-secret-key
@@ -138,6 +139,7 @@ docker run \
   -e SPATIAD_BIND_ADDR=0.0.0.0:3000 \
   -e SPATIAD_WEBHOOK_URL=http://example.com/webhooks/spatiad \
   -e SPATIAD_WEBHOOK_SECRET=dev-secret \
+  -e SPATIAD_WEBHOOK_TIMEOUT_MS=3000 \
   -e SPATIAD_DISPATCHER_TOKEN=dispatcher-token \
   -e SPATIAD_DRIVER_TOKEN=driver-token \
   -p 3000:3000 \
