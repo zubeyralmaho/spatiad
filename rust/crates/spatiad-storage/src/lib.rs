@@ -13,6 +13,11 @@ mod sqlite;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteBackend;
 
+#[cfg(feature = "postgres")]
+mod pg;
+#[cfg(feature = "postgres")]
+pub use pg::PostgresBackend;
+
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("WAL append failed: {0}")]

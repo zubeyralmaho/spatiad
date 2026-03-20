@@ -36,6 +36,16 @@ async fn main() -> anyhow::Result<()> {
             Engine::recover(h3_resolution, storage)
                 .map_err(|e| anyhow::anyhow!("failed to recover engine state: {e}"))?
         }
+        "postgres" => {
+            let url = std::env::var("SPATIAD_POSTGRES_URL")
+                .unwrap_or_else(|_| "host=localhost dbname=spatiad".to_string());
+            info!(url = %url, "opening PostgreSQL storage backend");
+            let backend = spatiad_storage::PostgresBackend::open(&url)
+                .context("failed to connect to PostgreSQL")?;
+            let storage: Box<dyn StorageBackend> = Box::new(backend);
+            Engine::recover(h3_resolution, storage)
+                .map_err(|e| anyhow::anyhow!("failed to recover engine state: {e}"))?
+        }
         _ => {
             if storage_backend != "memory" {
                 warn!(backend = %storage_backend, "unknown storage backend, falling back to in-memory");
@@ -95,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     start_background_tasks(state.clone());
 
     // Start snapshot background task when using persistent storage.
-    if storage_backend == "sqlite" {
+    if storage_backend == "sqlite" || storage_backend == "postgres" {
         let dispatch = state.dispatch.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
