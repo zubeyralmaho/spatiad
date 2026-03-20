@@ -83,6 +83,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ready_endpoint() {
+        let state = setup_test_state();
+        let mut app = router(state);
+
+        let (status, body) = make_request(&mut app, "GET", "/ready", None).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ready");
+        assert_eq!(body["service"], "spatiad");
+        assert_eq!(body["active_sessions"], 0);
+    }
+
+    #[tokio::test]
     async fn test_driver_upsert() {
         let state = setup_test_state();
         let mut app = router(state);

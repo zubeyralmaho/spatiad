@@ -20,6 +20,20 @@ Response:
 }
 ```
 
+## GET /ready
+
+Readiness endpoint for orchestrators. Returns `503` when internal state locks are temporarily contended.
+
+Response (200):
+
+```json
+{
+  "status": "ready",
+  "service": "spatiad",
+  "active_sessions": 0
+}
+```
+
 ## POST /api/v1/driver/upsert
 
 Registers or updates a driver snapshot in the in-memory engine.

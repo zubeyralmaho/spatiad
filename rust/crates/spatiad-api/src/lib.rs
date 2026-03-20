@@ -114,6 +114,13 @@ struct HealthResponse {
     service: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct ReadyResponse {
+    status: &'static str,
+    service: &'static str,
+    active_sessions: usize,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct OfferRequest {
     pub job_id: Uuid,
@@ -190,6 +197,7 @@ pub struct DriverUpsertRequest {
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/api/v1/driver/upsert", post(upsert_driver))
         .route("/api/v1/dispatch/offer", post(dispatch_offer))
         .route("/api/v1/dispatch/cancel", post(cancel_offer))
@@ -205,6 +213,48 @@ async fn health() -> Json<HealthResponse> {
         status: "ok",
         service: "spatiad",
     })
+}
+
+async fn ready(State(state): State<ApiState>) -> impl IntoResponse {
+    let dispatch_guard = match state.dispatch.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiErrorResponse {
+                    error: "not_ready",
+                    message: "dispatch state is temporarily busy".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let sessions_guard = match state.sessions.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiErrorResponse {
+                    error: "not_ready",
+                    message: "session state is temporarily busy".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let _ = &dispatch_guard;
+
+    (
+        StatusCode::OK,
+        Json(ReadyResponse {
+            status: "ready",
+            service: "spatiad",
+            active_sessions: sessions_guard.len(),
+        }),
+    )
+        .into_response()
 }
 
 async fn dispatch_offer(
