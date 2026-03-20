@@ -8,6 +8,11 @@ Authentication notes:
   - `Authorization: Bearer <token>`
   - `x-spatiad-dispatcher-token: <token>`
 - Dispatch endpoints are rate-limited per actor and may return `429 Too Many Requests`.
+- `429` responses include rate-limit headers:
+  - `Retry-After`: seconds until a retry is allowed
+  - `X-RateLimit-Limit`: request limit for current window
+  - `X-RateLimit-Remaining`: remaining requests in current window
+  - `X-RateLimit-Reset`: seconds until current window resets
 
 Request tracing notes:
 

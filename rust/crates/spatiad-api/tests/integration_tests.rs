@@ -209,6 +209,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rate_limited_response_contains_standard_headers() {
+        let mut state = setup_test_state();
+        state.dispatch_rate_limiter = Arc::new(Mutex::new(SlidingWindowRateLimiter::new(1, 60)));
+
+        let mut dispatch = state.dispatch.lock().await;
+        let job_id = Uuid::new_v4();
+        dispatch.engine.register_job(spatiad_types::JobRequest {
+            job_id,
+            category: "tow_truck".to_string(),
+            pickup: Coordinates {
+                latitude: 38.433,
+                longitude: 26.768,
+            },
+            dropoff: None,
+            initial_radius_km: 1.0,
+            max_radius_km: 5.0,
+            timeout_seconds: 30,
+            created_at: chrono::Utc::now(),
+        });
+        drop(dispatch);
+
+        let app = router(state);
+
+        let first = Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/dispatch/job/{}", job_id))
+            .body(Body::empty())
+            .unwrap();
+        let first_response = app.clone().oneshot(first).await.unwrap();
+        assert_eq!(first_response.status(), StatusCode::OK);
+
+        let second = Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/dispatch/job/{}", job_id))
+            .body(Body::empty())
+            .unwrap();
+        let second_response = app.oneshot(second).await.unwrap();
+
+        assert_eq!(second_response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(second_response.headers().get("x-ratelimit-limit").is_some());
+        assert!(second_response.headers().get("x-ratelimit-remaining").is_some());
+        assert!(second_response.headers().get("x-ratelimit-reset").is_some());
+        assert!(second_response.headers().get("retry-after").is_some());
+    }
+
+    #[tokio::test]
     async fn test_dispatch_offer_no_candidates_returns_404() {
         let state = setup_test_state();
         let mut app = router(state.clone());

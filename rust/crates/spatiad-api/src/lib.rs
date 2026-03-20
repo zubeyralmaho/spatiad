@@ -50,6 +50,15 @@ pub struct SlidingWindowRateLimiter {
     entries: HashMap<String, VecDeque<chrono::DateTime<Utc>>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RateLimitSnapshot {
+    allowed: bool,
+    limit: usize,
+    remaining: usize,
+    retry_after_seconds: u64,
+    reset_seconds: u64,
+}
+
 impl SlidingWindowRateLimiter {
     pub fn new(limit_per_window: usize, window_seconds: i64) -> Self {
         Self {
@@ -59,7 +68,7 @@ impl SlidingWindowRateLimiter {
         }
     }
 
-    fn allow(&mut self, key: String) -> bool {
+    fn check(&mut self, key: String) -> RateLimitSnapshot {
         let now = Utc::now();
         let cutoff = now - chrono::Duration::seconds(self.window_seconds);
         let queue = self.entries.entry(key).or_default();
@@ -69,11 +78,36 @@ impl SlidingWindowRateLimiter {
         }
 
         if queue.len() >= self.limit_per_window {
-            return false;
+            let reset_seconds = queue
+                .front()
+                .map(|ts| ((*ts + chrono::Duration::seconds(self.window_seconds)) - now).num_seconds())
+                .map(|seconds| seconds.max(1) as u64)
+                .unwrap_or(self.window_seconds as u64);
+
+            return RateLimitSnapshot {
+                allowed: false,
+                limit: self.limit_per_window,
+                remaining: 0,
+                retry_after_seconds: reset_seconds,
+                reset_seconds,
+            };
         }
 
         queue.push_back(now);
-        true
+        let remaining = self.limit_per_window.saturating_sub(queue.len());
+        let reset_seconds = queue
+            .front()
+            .map(|ts| ((*ts + chrono::Duration::seconds(self.window_seconds)) - now).num_seconds())
+            .map(|seconds| seconds.max(1) as u64)
+            .unwrap_or(self.window_seconds as u64);
+
+        RateLimitSnapshot {
+            allowed: true,
+            limit: self.limit_per_window,
+            remaining,
+            retry_after_seconds: 0,
+            reset_seconds,
+        }
     }
 }
 
@@ -368,15 +402,9 @@ async fn dispatch_offer(
             .into_response();
     }
 
-    if !allow_dispatch_request(&state, &headers, "dispatch_offer").await {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ApiErrorResponse {
-                error: "rate_limited",
-                message: "dispatch request rate limit exceeded".to_string(),
-            }),
-        )
-            .into_response();
+    let rate_limit = check_dispatch_request(&state, &headers, "dispatch_offer").await;
+    if !rate_limit.allowed {
+        return rate_limited_json_response(rate_limit).into_response();
     }
 
     let mut dispatch = state.dispatch.lock().await;
@@ -429,8 +457,9 @@ async fn upsert_driver(
             .into_response();
     }
 
-    if !allow_dispatch_request(&state, &headers, "driver_upsert").await {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    let rate_limit = check_dispatch_request(&state, &headers, "driver_upsert").await;
+    if !rate_limit.allowed {
+        return rate_limited_status_response(rate_limit);
     }
 
     let mut dispatch = state.dispatch.lock().await;
@@ -450,16 +479,17 @@ async fn cancel_offer(
     Json(payload): Json<OfferCancelRequest>,
 ) -> impl IntoResponse {
     if !is_dispatcher_authorized(&state, &headers) {
-        return StatusCode::UNAUTHORIZED;
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    if !allow_dispatch_request(&state, &headers, "dispatch_cancel_offer").await {
-        return StatusCode::TOO_MANY_REQUESTS;
+    let rate_limit = check_dispatch_request(&state, &headers, "dispatch_cancel_offer").await;
+    if !rate_limit.allowed {
+        return rate_limited_status_response(rate_limit);
     }
 
     let mut dispatch = state.dispatch.lock().await;
     dispatch.cancel_offer(payload.offer_id);
-    axum::http::StatusCode::OK
+    axum::http::StatusCode::OK.into_response()
 }
 
 async fn cancel_job(
@@ -468,19 +498,20 @@ async fn cancel_job(
     Json(payload): Json<JobCancelRequest>,
 ) -> impl IntoResponse {
     if !is_dispatcher_authorized(&state, &headers) {
-        return StatusCode::UNAUTHORIZED;
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    if !allow_dispatch_request(&state, &headers, "dispatch_cancel_job").await {
-        return StatusCode::TOO_MANY_REQUESTS;
+    let rate_limit = check_dispatch_request(&state, &headers, "dispatch_cancel_job").await;
+    if !rate_limit.allowed {
+        return rate_limited_status_response(rate_limit);
     }
 
     let mut dispatch = state.dispatch.lock().await;
     if !dispatch.cancel_job(payload.job_id) {
-        return StatusCode::NOT_FOUND;
+        return StatusCode::NOT_FOUND.into_response();
     }
 
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn dispatch_job_status(
@@ -492,15 +523,9 @@ async fn dispatch_job_status(
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
-    if !allow_dispatch_request(&state, &headers, "dispatch_job_status").await {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ApiErrorResponse {
-                error: "rate_limited",
-                message: "dispatch request rate limit exceeded".to_string(),
-            }),
-        )
-            .into_response();
+    let rate_limit = check_dispatch_request(&state, &headers, "dispatch_job_status").await;
+    if !rate_limit.allowed {
+        return rate_limited_json_response(rate_limit).into_response();
     }
 
     let dispatch = state.dispatch.lock().await;
@@ -556,10 +581,11 @@ async fn dispatch_job_events(
     headers: HeaderMap,
     Path(job_id): Path<Uuid>,
     Query(query): Query<JobEventsQuery>,
-) -> Result<Json<JobEventsResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+) -> Result<Json<JobEventsResponse>, (StatusCode, HeaderMap, Json<ApiErrorResponse>)> {
     if !is_dispatcher_authorized(&state, &headers) {
         return Err((
             StatusCode::UNAUTHORIZED,
+            HeaderMap::new(),
             Json(ApiErrorResponse {
                 error: "unauthorized",
                 message: "missing or invalid dispatcher auth token".to_string(),
@@ -567,9 +593,11 @@ async fn dispatch_job_events(
         ));
     }
 
-    if !allow_dispatch_request(&state, &headers, "dispatch_job_events").await {
+    let rate_limit = check_dispatch_request(&state, &headers, "dispatch_job_events").await;
+    if !rate_limit.allowed {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
+            rate_limit_headers(rate_limit),
             Json(ApiErrorResponse {
                 error: "rate_limited",
                 message: "dispatch request rate limit exceeded".to_string(),
@@ -582,6 +610,7 @@ async fn dispatch_job_events(
     if query.before.is_some() && query.cursor.is_some() {
         return Err((
             StatusCode::BAD_REQUEST,
+            HeaderMap::new(),
             Json(ApiErrorResponse {
                 error: "invalid_query",
                 message: "use either 'before' or 'cursor', not both".to_string(),
@@ -596,6 +625,7 @@ async fn dispatch_job_events(
                 .map_err(|_| {
                     (
                         StatusCode::BAD_REQUEST,
+                        HeaderMap::new(),
                         Json(ApiErrorResponse {
                             error: "invalid_query",
                             message: "invalid 'before' cursor; expected RFC3339 timestamp"
@@ -611,6 +641,7 @@ async fn dispatch_job_events(
         Some(raw) => Some(parse_events_cursor(raw).map_err(|message| {
             (
                 StatusCode::BAD_REQUEST,
+                HeaderMap::new(),
                 Json(ApiErrorResponse {
                     error: "invalid_query",
                     message,
@@ -623,6 +654,7 @@ async fn dispatch_job_events(
     let kinds = parse_job_event_kinds(query.kinds.as_deref()).map_err(|message| {
         (
             StatusCode::BAD_REQUEST,
+            HeaderMap::new(),
             Json(ApiErrorResponse {
                 error: "invalid_query",
                 message,
@@ -683,11 +715,57 @@ async fn driver_ws(
     .into_response()
 }
 
-async fn allow_dispatch_request(state: &ApiState, headers: &HeaderMap, endpoint: &str) -> bool {
+async fn check_dispatch_request(
+    state: &ApiState,
+    headers: &HeaderMap,
+    endpoint: &str,
+) -> RateLimitSnapshot {
     let actor = dispatch_actor_key(headers);
     let key = format!("{}:{}", endpoint, actor);
     let mut limiter = state.dispatch_rate_limiter.lock().await;
-    limiter.allow(key)
+    limiter.check(key)
+}
+
+fn rate_limited_json_response(
+    snapshot: RateLimitSnapshot,
+) -> (StatusCode, HeaderMap, Json<ApiErrorResponse>) {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        rate_limit_headers(snapshot),
+        Json(ApiErrorResponse {
+            error: "rate_limited",
+            message: "dispatch request rate limit exceeded".to_string(),
+        }),
+    )
+}
+
+fn rate_limited_status_response(snapshot: RateLimitSnapshot) -> Response {
+    let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+    apply_rate_limit_headers(response.headers_mut(), snapshot);
+    response
+}
+
+fn rate_limit_headers(snapshot: RateLimitSnapshot) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    apply_rate_limit_headers(&mut headers, snapshot);
+    headers
+}
+
+fn apply_rate_limit_headers(headers: &mut HeaderMap, snapshot: RateLimitSnapshot) {
+    if let Ok(value) = HeaderValue::from_str(&snapshot.limit.to_string()) {
+        headers.insert("x-ratelimit-limit", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&snapshot.remaining.to_string()) {
+        headers.insert("x-ratelimit-remaining", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&snapshot.reset_seconds.to_string()) {
+        headers.insert("x-ratelimit-reset", value);
+    }
+    if !snapshot.allowed {
+        if let Ok(value) = HeaderValue::from_str(&snapshot.retry_after_seconds.to_string()) {
+            headers.insert(axum::http::header::RETRY_AFTER, value);
+        }
+    }
 }
 
 fn dispatch_actor_key(headers: &HeaderMap) -> String {
@@ -1351,9 +1429,9 @@ mod tests {
         .expect_err("invalid kind should fail");
 
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(error.1.error, "invalid_query");
+        assert_eq!(error.2.error, "invalid_query");
         assert!(error
-            .1
+            .2
             .message
             .contains("unsupported event kind 'unknown_event'"));
     }
@@ -1379,9 +1457,9 @@ mod tests {
         .expect_err("invalid cursor should fail");
 
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(error.1.error, "invalid_query");
+        assert_eq!(error.2.error, "invalid_query");
         assert!(error
-            .1
+            .2
             .message
             .contains("invalid 'before' cursor"));
     }
@@ -1407,8 +1485,8 @@ mod tests {
         .expect_err("invalid cursor should fail");
 
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(error.1.error, "invalid_query");
-        assert!(error.1.message.contains("invalid 'cursor' format"));
+        assert_eq!(error.2.error, "invalid_query");
+        assert!(error.2.message.contains("invalid 'cursor' format"));
     }
 
     #[tokio::test]
@@ -1432,9 +1510,9 @@ mod tests {
         .expect_err("before+cursor should fail");
 
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(error.1.error, "invalid_query");
+        assert_eq!(error.2.error, "invalid_query");
         assert!(error
-            .1
+            .2
             .message
             .contains("either 'before' or 'cursor'"));
     }
@@ -1461,7 +1539,7 @@ mod tests {
         .expect_err("missing token should fail");
 
         assert_eq!(error.0, StatusCode::UNAUTHORIZED);
-        assert_eq!(error.1.error, "unauthorized");
+        assert_eq!(error.2.error, "unauthorized");
     }
 
     #[tokio::test]
@@ -1572,7 +1650,10 @@ mod tests {
         .expect_err("second request should be rate limited");
 
         assert_eq!(second.0, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(second.1.error, "rate_limited");
+        assert_eq!(second.2.error, "rate_limited");
+        assert!(second.1.get("x-ratelimit-limit").is_some());
+        assert!(second.1.get("x-ratelimit-remaining").is_some());
+        assert!(second.1.get(axum::http::header::RETRY_AFTER).is_some());
     }
 
     #[tokio::test]
