@@ -1384,6 +1384,7 @@ dependencies = [
  "spatiad-types",
  "spatiad-ws",
  "tokio",
+ "tower",
  "uuid",
 ]
 

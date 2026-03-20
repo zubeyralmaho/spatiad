@@ -98,7 +98,10 @@ try {
     limit: 10,
     maxEvents: 50,
     resumeOnTransientError: true,
-    maxResumeAttempts: 3
+    maxResumeAttempts: 3,
+    shouldResumeOnError: (error, attempt) => {
+      return error.status === 400 && attempt <= 2;
+    }
   })) {
     console.log(event.kind, event.at);
   }
