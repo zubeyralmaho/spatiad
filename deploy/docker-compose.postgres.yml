@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: spatiad-postgres
+    environment:
+      POSTGRES_USER: spatiad
+      POSTGRES_PASSWORD: spatiad
+      POSTGRES_DB: spatiad
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spatiad"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  spatiad:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: spatiad
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPATIAD_LOG_LEVEL: info
+      SPATIAD_BIND_ADDR: 0.0.0.0:3000
+      SPATIAD_H3_RESOLUTION: 8
+      SPATIAD_STORAGE_BACKEND: postgres
+      SPATIAD_POSTGRES_URL: "host=postgres user=spatiad password=spatiad dbname=spatiad"
+      SPATIAD_SNAPSHOT_INTERVAL_SECS: 300
+      SPATIAD_DRIVER_TTL_SECS: 120
+      SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN: 240
+      SPATIAD_WS_RECONNECT_MAX_PER_MIN: 30
+      # SPATIAD_WEBHOOK_URL: http://webhook-receiver:4000/webhooks/spatiad
+      # SPATIAD_WEBHOOK_SECRET: your-secret-key
+      # SPATIAD_DISPATCHER_TOKEN: dispatcher-token
+      # SPATIAD_DRIVER_TOKEN: driver-token
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    command: spatiad-bin
+
+volumes:
+  pgdata:

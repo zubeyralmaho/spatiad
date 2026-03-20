@@ -27,6 +27,7 @@ mod tests {
             webhook_timeout_ms: 3_000,
             driver_token: None,
             dispatcher_token: None,
+            driver_ttl_secs: None,
             dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(240, 60))),
             ws_reconnect_guard: Arc::new(Mutex::new(WsReconnectGuard::new(30, 60))),
             sessions: Arc::new(Mutex::new(HashMap::new())),

@@ -92,6 +92,17 @@ pub struct JobEventRecord {
     pub kind: JobEventKind,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineStats {
+    pub drivers: usize,
+    pub jobs: usize,
+    pub offers: usize,
+    pub pending_offers: usize,
+    pub cancelled_jobs: usize,
+    pub wal_sequence: u64,
+    pub storage_persistent: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct JobEventsCursor {
     pub occurred_at: DateTime<Utc>,
@@ -370,6 +381,10 @@ impl Engine {
                     }
                 }
             }
+            Command::RemoveDriver { driver_id } => {
+                self.spatial.remove_driver(*driver_id);
+                self.drivers.remove(driver_id);
+            }
             Command::RecordWebhookDeliveryFailed { job_id, offer_id } => {
                 if self.jobs.contains_key(job_id) {
                     self.push_job_event(
@@ -428,6 +443,43 @@ impl Engine {
             return;
         }
         self.append_and_apply(Command::RecordWebhookDeliveryFailed { job_id, offer_id });
+    }
+
+    /// Remove drivers that have not sent a location update within `ttl`.
+    /// Returns the list of removed driver IDs.
+    pub fn expire_stale_drivers(&mut self, ttl: chrono::Duration) -> Vec<Uuid> {
+        let cutoff = Utc::now() - ttl;
+        let stale: Vec<Uuid> = self
+            .drivers
+            .iter()
+            .filter(|(_, d)| d.last_seen_at < cutoff)
+            .map(|(id, _)| *id)
+            .collect();
+
+        for driver_id in &stale {
+            self.append_and_apply(Command::RemoveDriver {
+                driver_id: *driver_id,
+            });
+        }
+        stale
+    }
+
+    /// Return basic engine statistics for health/diagnostics.
+    pub fn stats(&self) -> EngineStats {
+        let pending_offers = self
+            .offers
+            .values()
+            .filter(|o| o.status == OfferStatus::Pending)
+            .count();
+        EngineStats {
+            drivers: self.drivers.len(),
+            jobs: self.jobs.len(),
+            offers: self.offers.len(),
+            pending_offers,
+            cancelled_jobs: self.cancelled_jobs.len(),
+            wal_sequence: self.wal_sequence,
+            storage_persistent: self.storage.is_persistent(),
+        }
     }
 
     pub fn create_offer(&mut self, job_id: Uuid, driver_id: Uuid, timeout_seconds: u64) -> OfferRecord {

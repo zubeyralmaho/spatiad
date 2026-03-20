@@ -67,6 +67,9 @@ pub enum Command {
     CancelJob {
         job_id: Uuid,
     },
+    RemoveDriver {
+        driver_id: Uuid,
+    },
     RecordWebhookDeliveryFailed {
         job_id: Uuid,
         offer_id: Uuid,

@@ -14,6 +14,12 @@ services:
       SPATIAD_H3_RESOLUTION: 8
       SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN: 240
       SPATIAD_WS_RECONNECT_MAX_PER_MIN: 30
+      # Storage: "memory" (default), "sqlite", or "postgres"
+      SPATIAD_STORAGE_BACKEND: memory
+      # SPATIAD_SQLITE_PATH: /data/spatiad.db
+      # SPATIAD_SNAPSHOT_INTERVAL_SECS: 300
+      # Driver TTL: remove drivers that haven't sent a heartbeat (seconds)
+      # SPATIAD_DRIVER_TTL_SECS: 120
       # Optional: Configure webhook callbacks
       # SPATIAD_WEBHOOK_URL: http://webhook-receiver:4000/webhooks/spatiad
       # SPATIAD_WEBHOOK_SECRET: your-secret-key

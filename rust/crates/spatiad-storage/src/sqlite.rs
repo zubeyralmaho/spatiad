@@ -434,6 +434,7 @@ mod tests {
             Command::MarkOfferExpired { offer_id: Uuid::new_v4() },
             Command::MarkOfferCancelled { offer_id: Uuid::new_v4() },
             Command::CancelJob { job_id: Uuid::new_v4() },
+            Command::RemoveDriver { driver_id: Uuid::new_v4() },
             Command::RecordWebhookDeliveryFailed {
                 job_id: Uuid::new_v4(),
                 offer_id: Uuid::new_v4(),

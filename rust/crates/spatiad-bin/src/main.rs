@@ -84,6 +84,12 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(300);
 
+    let driver_ttl_secs: Option<u64> = std::env::var("SPATIAD_DRIVER_TTL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+
+    let is_persistent = storage_backend == "sqlite" || storage_backend == "postgres";
+
     let state = ApiState {
         dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
         webhook_url: std::env::var("SPATIAD_WEBHOOK_URL").ok(),
@@ -91,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         webhook_timeout_ms,
         driver_token: std::env::var("SPATIAD_DRIVER_TOKEN").ok(),
         dispatcher_token: std::env::var("SPATIAD_DISPATCHER_TOKEN").ok(),
+        driver_ttl_secs,
         dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(
             dispatch_rate_limit_per_min,
             60,
@@ -105,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     start_background_tasks(state.clone());
 
     // Start snapshot background task when using persistent storage.
-    if storage_backend == "sqlite" || storage_backend == "postgres" {
+    if is_persistent {
         let dispatch = state.dispatch.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(
@@ -125,19 +132,30 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = router(state);
+    let app = router(state.clone());
 
     let bind_addr = std::env::var("SPATIAD_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
     let addr: SocketAddr = bind_addr
         .parse()
         .context("invalid bind address")?;
 
-    info!(%addr, %storage_backend, webhook_timeout_ms, snapshot_interval_secs, "starting spatiad API");
+    info!(%addr, %storage_backend, webhook_timeout_ms, snapshot_interval_secs, ?driver_ttl_secs, "starting spatiad API");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Graceful shutdown: write final snapshot if using persistent storage.
+    if is_persistent {
+        info!("writing final snapshot before exit");
+        let service = state.dispatch.lock().await;
+        if let Err(e) = service.engine.create_snapshot() {
+            warn!(error = %e, "final snapshot failed");
+        } else {
+            info!("final snapshot written successfully");
+        }
+    }
 
     Ok(())
 }

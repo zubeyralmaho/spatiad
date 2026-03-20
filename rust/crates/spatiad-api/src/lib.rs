@@ -15,7 +15,7 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use spatiad_core::{JobDispatchState, JobEventFilterKind, JobEventKind, JobEventRecord, JobEventsCursor};
+use spatiad_core::{EngineStats, JobDispatchState, JobEventFilterKind, JobEventKind, JobEventRecord, JobEventsCursor};
 use spatiad_dispatch::DispatchService;
 use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult, OfferStatus};
 use spatiad_ws::{DriverInbound, DriverOutbound};
@@ -38,6 +38,7 @@ pub struct ApiState {
     pub webhook_timeout_ms: u64,
     pub driver_token: Option<String>,
     pub dispatcher_token: Option<String>,
+    pub driver_ttl_secs: Option<u64>,
     pub dispatch_rate_limiter: Arc<Mutex<SlidingWindowRateLimiter>>,
     pub ws_reconnect_guard: Arc<Mutex<WsReconnectGuard>>,
     pub sessions: Arc<Mutex<HashMap<Uuid, mpsc::UnboundedSender<DriverOutbound>>>>,
@@ -156,6 +157,7 @@ struct ReadyResponse {
     status: &'static str,
     service: &'static str,
     active_sessions: usize,
+    engine: EngineStats,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,7 +324,7 @@ async fn ready(State(state): State<ApiState>) -> impl IntoResponse {
         }
     };
 
-    let _ = &dispatch_guard;
+    let engine_stats = dispatch_guard.engine.stats();
 
     (
         StatusCode::OK,
@@ -330,6 +332,7 @@ async fn ready(State(state): State<ApiState>) -> impl IntoResponse {
             status: "ready",
             service: "spatiad",
             active_sessions: sessions_guard.len(),
+            engine: engine_stats,
         }),
     )
         .into_response()
@@ -1078,7 +1081,8 @@ async fn notify_new_offers(state: &ApiState, offers: Vec<spatiad_types::OfferRec
 }
 
 pub fn start_background_tasks(state: ApiState) {
-    let background_state = state;
+    // Offer expiration task (1s interval)
+    let bg = state.clone();
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(1));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1086,7 +1090,7 @@ pub fn start_background_tasks(state: ApiState) {
         loop {
             ticker.tick().await;
             let update = {
-                let mut dispatch = background_state.dispatch.lock().await;
+                let mut dispatch = bg.dispatch.lock().await;
                 dispatch.expire_pending_offers_global()
             };
 
@@ -1094,7 +1098,7 @@ pub fn start_background_tasks(state: ApiState) {
                 continue;
             }
 
-            let sessions = background_state.sessions.lock().await;
+            let sessions = bg.sessions.lock().await;
             for item in &update.expired {
                 if let Some(tx) = sessions.get(&item.driver_id) {
                     let _ = tx.send(DriverOutbound::OfferExpired {
@@ -1104,9 +1108,30 @@ pub fn start_background_tasks(state: ApiState) {
             }
             drop(sessions);
 
-            notify_new_offers(&background_state, update.new_offers).await;
+            notify_new_offers(&bg, update.new_offers).await;
         }
     });
+
+    // Driver TTL expiration task (10s interval)
+    if let Some(ttl_secs) = state.driver_ttl_secs {
+        let bg = state;
+        tokio::spawn(async move {
+            let ttl = chrono::Duration::seconds(ttl_secs as i64);
+            let mut ticker = interval(Duration::from_secs(10));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                ticker.tick().await;
+                let removed = {
+                    let mut dispatch = bg.dispatch.lock().await;
+                    dispatch.engine.expire_stale_drivers(ttl)
+                };
+                if !removed.is_empty() {
+                    tracing::info!(count = removed.len(), "expired stale drivers");
+                }
+            }
+        });
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1705,6 +1730,7 @@ mod tests {
             webhook_timeout_ms: 3_000,
             driver_token: None,
             dispatcher_token: None,
+            driver_ttl_secs: None,
             dispatch_rate_limiter: Arc::new(Mutex::new(SlidingWindowRateLimiter::new(1000, 60))),
             ws_reconnect_guard: Arc::new(Mutex::new(WsReconnectGuard::new(1000, 60))),
             sessions: Arc::new(Mutex::new(HashMap::new())),
