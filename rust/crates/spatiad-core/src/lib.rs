@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use spatiad_h3::SpatialIndex;
+use spatiad_storage::{
+    Command, EngineSnapshot, EventCursor, StorageBackend, StoredJobEvent, InMemoryBackend,
+};
 use spatiad_types::{
     Coordinates, DriverSnapshot, DriverStatus, JobRequest, MatchResult, OfferRecord, OfferStatus,
 };
@@ -24,7 +28,7 @@ pub struct PendingDriverOffer {
     pub job_id: Uuid,
     pub pickup: Coordinates,
     pub dropoff: Option<Coordinates>,
-    pub expires_at: chrono::DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +57,7 @@ pub enum JobDispatchState {
     Exhausted,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JobEventKind {
     JobRegistered,
     JobCancelled,
@@ -67,7 +71,7 @@ pub enum JobEventKind {
     OfferStatusUpdated { offer_id: Uuid, status: OfferStatus },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum JobEventFilterKind {
     JobRegistered,
     JobCancelled,
@@ -81,21 +85,21 @@ pub enum JobEventFilterKind {
     OfferStatusUpdated,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobEventRecord {
     pub sequence: u64,
-    pub occurred_at: chrono::DateTime<Utc>,
+    pub occurred_at: DateTime<Utc>,
     pub kind: JobEventKind,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct JobEventsCursor {
-    pub occurred_at: chrono::DateTime<Utc>,
+    pub occurred_at: DateTime<Utc>,
     pub sequence: u64,
 }
 
-#[derive(Debug)]
 pub struct Engine {
+    h3_resolution: u8,
     spatial: SpatialIndex,
     drivers: HashMap<Uuid, DriverSnapshot>,
     jobs: HashMap<Uuid, JobRequest>,
@@ -103,13 +107,32 @@ pub struct Engine {
     cancelled_jobs: HashSet<Uuid>,
     job_events: HashMap<Uuid, Vec<JobEventRecord>>,
     job_event_sequences: HashMap<Uuid, u64>,
+    storage: Box<dyn StorageBackend>,
+    wal_sequence: u64,
+}
+
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("h3_resolution", &self.h3_resolution)
+            .field("wal_sequence", &self.wal_sequence)
+            .field("drivers", &self.drivers.len())
+            .field("jobs", &self.jobs.len())
+            .field("offers", &self.offers.len())
+            .finish()
+    }
 }
 
 const MAX_JOB_EVENTS: usize = 200;
 
 impl Engine {
     pub fn new(h3_resolution: u8) -> Self {
+        Self::with_storage(h3_resolution, Box::new(InMemoryBackend))
+    }
+
+    pub fn with_storage(h3_resolution: u8, storage: Box<dyn StorageBackend>) -> Self {
         Self {
+            h3_resolution,
             spatial: SpatialIndex::new(h3_resolution),
             drivers: HashMap::new(),
             jobs: HashMap::new(),
@@ -117,8 +140,259 @@ impl Engine {
             cancelled_jobs: HashSet::new(),
             job_events: HashMap::new(),
             job_event_sequences: HashMap::new(),
+            storage,
+            wal_sequence: 0,
         }
     }
+
+    /// Recover engine state from persistent storage (snapshot + WAL replay).
+    pub fn recover(h3_resolution: u8, storage: Box<dyn StorageBackend>) -> Result<Self, String> {
+        let snapshot = storage.load_snapshot().map_err(|e| e.to_string())?;
+        let mut engine = if let Some(snap) = snapshot {
+            let mut e = Self {
+                h3_resolution: snap.h3_resolution,
+                spatial: SpatialIndex::new(snap.h3_resolution),
+                drivers: snap.drivers,
+                jobs: snap.jobs,
+                offers: snap.offers,
+                cancelled_jobs: snap.cancelled_jobs,
+                job_events: HashMap::new(),
+                job_event_sequences: snap.job_event_sequences,
+                storage,
+                wal_sequence: snap.wal_sequence,
+            };
+            // Rebuild spatial index from driver positions
+            let positions: Vec<(Uuid, Coordinates)> = e
+                .drivers
+                .iter()
+                .map(|(id, d)| (*id, d.position))
+                .collect();
+            for (id, pos) in positions {
+                e.spatial.upsert_driver(id, pos);
+            }
+            e
+        } else {
+            Self::with_storage(h3_resolution, storage)
+        };
+
+        // Replay WAL entries after the snapshot
+        let wal_entries = engine
+            .storage
+            .load_wal_after(engine.wal_sequence)
+            .map_err(|e| e.to_string())?;
+
+        for (seq, cmd) in wal_entries {
+            engine.apply_command(&cmd);
+            engine.wal_sequence = seq;
+        }
+
+        Ok(engine)
+    }
+
+    /// Create a snapshot of the current state for persistence.
+    pub fn to_snapshot(&self) -> EngineSnapshot {
+        EngineSnapshot {
+            h3_resolution: self.h3_resolution,
+            drivers: self.drivers.clone(),
+            jobs: self.jobs.clone(),
+            offers: self.offers.clone(),
+            cancelled_jobs: self.cancelled_jobs.clone(),
+            job_event_sequences: self.job_event_sequences.clone(),
+            wal_sequence: self.wal_sequence,
+        }
+    }
+
+    /// Write a snapshot and compact the WAL.
+    pub fn create_snapshot(&self) -> Result<(), String> {
+        let snapshot = self.to_snapshot();
+        self.storage
+            .write_snapshot(&snapshot)
+            .map_err(|e| e.to_string())?;
+        self.storage
+            .compact_wal(self.wal_sequence)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Apply a command to engine state without WAL (used for replay and internal use).
+    fn apply_command(&mut self, cmd: &Command) {
+        match cmd {
+            Command::UpsertDriverLocation {
+                driver_id,
+                category,
+                position,
+                status,
+                timestamp,
+            } => {
+                let snapshot = DriverSnapshot {
+                    driver_id: *driver_id,
+                    category: category.clone(),
+                    status: status.clone(),
+                    position: *position,
+                    last_seen_at: *timestamp,
+                };
+                self.spatial.upsert_driver(*driver_id, *position);
+                self.drivers.insert(*driver_id, snapshot);
+            }
+            Command::RegisterJob { job } => {
+                let job_id = job.job_id;
+                self.jobs.insert(job_id, job.clone());
+                self.cancelled_jobs.remove(&job_id);
+                self.push_job_event(job_id, JobEventKind::JobRegistered);
+            }
+            Command::CreateOffer { offer } => {
+                let offer_id = offer.offer_id;
+                let job_id = offer.job_id;
+                let driver_id = offer.driver_id;
+                self.offers.insert(offer_id, offer.clone());
+                self.push_job_event(
+                    job_id,
+                    JobEventKind::OfferCreated { offer_id, driver_id },
+                );
+            }
+            Command::AcceptOffer {
+                offer_id,
+                responded_at: _,
+            } => {
+                if let Some(offer) = self.offers.get_mut(offer_id) {
+                    let job_id = offer.job_id;
+                    let driver_id = offer.driver_id;
+                    let selected_offer_id = offer.offer_id;
+                    offer.status = OfferStatus::Accepted;
+
+                    // Cancel competing offers
+                    let mut cancelled = Vec::new();
+                    for other in self.offers.values_mut() {
+                        if other.job_id == job_id
+                            && other.offer_id != selected_offer_id
+                            && other.status == OfferStatus::Pending
+                        {
+                            other.status = OfferStatus::Cancelled;
+                            cancelled.push((other.offer_id, other.driver_id));
+                        }
+                    }
+
+                    if let Some(driver) = self.drivers.get_mut(&driver_id) {
+                        driver.status = DriverStatus::Busy;
+                    }
+
+                    for (oid, did) in cancelled {
+                        self.push_job_event(
+                            job_id,
+                            JobEventKind::OfferCancelled {
+                                offer_id: oid,
+                                driver_id: did,
+                            },
+                        );
+                    }
+                    self.push_job_event(
+                        job_id,
+                        JobEventKind::OfferAccepted {
+                            offer_id: selected_offer_id,
+                            driver_id,
+                        },
+                    );
+                    self.push_job_event(
+                        job_id,
+                        JobEventKind::MatchConfirmed {
+                            offer_id: selected_offer_id,
+                            driver_id,
+                        },
+                    );
+                }
+            }
+            Command::RejectOffer {
+                offer_id,
+                responded_at: _,
+            } => {
+                if let Some(offer) = self.offers.get_mut(offer_id) {
+                    let job_id = offer.job_id;
+                    let driver_id = offer.driver_id;
+                    offer.status = OfferStatus::Rejected;
+                    self.push_job_event(
+                        job_id,
+                        JobEventKind::OfferRejected {
+                            offer_id: *offer_id,
+                            driver_id,
+                        },
+                    );
+                }
+            }
+            Command::MarkOfferExpired { offer_id } => {
+                if let Some(offer) = self.offers.get_mut(offer_id) {
+                    let job_id = offer.job_id;
+                    let driver_id = offer.driver_id;
+                    offer.status = OfferStatus::Expired;
+                    self.push_job_event(
+                        job_id,
+                        JobEventKind::OfferExpired {
+                            offer_id: *offer_id,
+                            driver_id,
+                        },
+                    );
+                }
+            }
+            Command::MarkOfferCancelled { offer_id } => {
+                if let Some(offer) = self.offers.get_mut(offer_id) {
+                    let job_id = offer.job_id;
+                    let driver_id = offer.driver_id;
+                    offer.status = OfferStatus::Cancelled;
+                    self.push_job_event(
+                        job_id,
+                        JobEventKind::OfferCancelled {
+                            offer_id: *offer_id,
+                            driver_id,
+                        },
+                    );
+                }
+            }
+            Command::CancelJob { job_id } => {
+                if self.jobs.contains_key(job_id) {
+                    let was_new = self.cancelled_jobs.insert(*job_id);
+                    let mut cancelled_offers = Vec::new();
+                    for offer in self.offers.values_mut() {
+                        if offer.job_id == *job_id && offer.status == OfferStatus::Pending {
+                            offer.status = OfferStatus::Cancelled;
+                            cancelled_offers.push((offer.offer_id, offer.driver_id));
+                        }
+                    }
+                    for (oid, did) in cancelled_offers {
+                        self.push_job_event(
+                            *job_id,
+                            JobEventKind::OfferCancelled {
+                                offer_id: oid,
+                                driver_id: did,
+                            },
+                        );
+                    }
+                    if was_new {
+                        self.push_job_event(*job_id, JobEventKind::JobCancelled);
+                    }
+                }
+            }
+            Command::RecordWebhookDeliveryFailed { job_id, offer_id } => {
+                if self.jobs.contains_key(job_id) {
+                    self.push_job_event(
+                        *job_id,
+                        JobEventKind::WebhookDeliveryFailed {
+                            offer_id: *offer_id,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    fn append_and_apply(&mut self, cmd: Command) {
+        self.wal_sequence += 1;
+        // Best-effort WAL append — log but don't fail the operation
+        if let Err(e) = self.storage.append_wal(self.wal_sequence, &cmd) {
+            tracing::error!(error = %e, "WAL append failed");
+        }
+        self.apply_command(&cmd);
+    }
+
+    // ─── Public mutation methods ─────────────────────────────────────
 
     pub fn upsert_driver_location(
         &mut self,
@@ -127,53 +401,25 @@ impl Engine {
         position: Coordinates,
         status: DriverStatus,
     ) {
-        let snapshot = DriverSnapshot {
+        let now = Utc::now();
+        self.append_and_apply(Command::UpsertDriverLocation {
             driver_id,
             category,
-            status,
             position,
-            last_seen_at: Utc::now(),
-        };
-
-        self.spatial.upsert_driver(driver_id, position);
-        self.drivers.insert(driver_id, snapshot);
+            status,
+            timestamp: now,
+        });
     }
 
     pub fn register_job(&mut self, job: JobRequest) {
-        let job_id = job.job_id;
-        self.jobs.insert(job_id, job);
-        self.cancelled_jobs.remove(&job_id);
-        self.push_job_event(job_id, JobEventKind::JobRegistered);
+        self.append_and_apply(Command::RegisterJob { job });
     }
 
     pub fn cancel_job(&mut self, job_id: Uuid) -> bool {
         if !self.jobs.contains_key(&job_id) {
             return false;
         }
-
-        let was_newly_cancelled = self.cancelled_jobs.insert(job_id);
-        let mut cancelled_offers = Vec::new();
-        for offer in self.offers.values_mut() {
-            if offer.job_id == job_id && offer.status == OfferStatus::Pending {
-                offer.status = OfferStatus::Cancelled;
-                cancelled_offers.push((offer.offer_id, offer.driver_id));
-            }
-        }
-
-        for (offer_id, driver_id) in cancelled_offers {
-            self.push_job_event(
-                job_id,
-                JobEventKind::OfferCancelled {
-                    offer_id,
-                    driver_id,
-                },
-            );
-        }
-
-        if was_newly_cancelled {
-            self.push_job_event(job_id, JobEventKind::JobCancelled);
-        }
-
+        self.append_and_apply(Command::CancelJob { job_id });
         true
     }
 
@@ -181,8 +427,7 @@ impl Engine {
         if !self.jobs.contains_key(&job_id) {
             return;
         }
-
-        self.push_job_event(job_id, JobEventKind::WebhookDeliveryFailed { offer_id });
+        self.append_and_apply(Command::RecordWebhookDeliveryFailed { job_id, offer_id });
     }
 
     pub fn create_offer(&mut self, job_id: Uuid, driver_id: Uuid, timeout_seconds: u64) -> OfferRecord {
@@ -194,15 +439,9 @@ impl Engine {
             status: OfferStatus::Pending,
             expires_at,
         };
-
-        self.offers.insert(offer.offer_id, offer.clone());
-        self.push_job_event(
-            job_id,
-            JobEventKind::OfferCreated {
-                offer_id: offer.offer_id,
-                driver_id,
-            },
-        );
+        self.append_and_apply(Command::CreateOffer {
+            offer: offer.clone(),
+        });
         offer
     }
 
@@ -220,7 +459,6 @@ impl Engine {
                 if driver.status != DriverStatus::Available || !driver.category.eq_ignore_ascii_case(category) {
                     return None;
                 }
-
                 let distance_km = haversine_km(pickup, driver.position);
                 if distance_km <= radius_km {
                     Some((*driver_id, distance_km))
@@ -235,17 +473,30 @@ impl Engine {
     }
 
     pub fn mark_offer_status(&mut self, offer_id: Uuid, status: OfferStatus) -> Result<(), CoreError> {
-        let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
-        let job_id = offer.job_id;
-        let status_for_event = status.clone();
-        offer.status = status;
-        self.push_job_event(
-            job_id,
-            JobEventKind::OfferStatusUpdated {
-                offer_id,
-                status: status_for_event,
-            },
-        );
+        let offer = self.offers.get(&offer_id).ok_or(CoreError::OfferNotFound)?;
+        let _job_id = offer.job_id;
+        match status {
+            OfferStatus::Cancelled => {
+                self.append_and_apply(Command::MarkOfferCancelled { offer_id });
+            }
+            OfferStatus::Expired => {
+                self.append_and_apply(Command::MarkOfferExpired { offer_id });
+            }
+            _ => {
+                // For other status changes, apply directly (offer_status_updated event)
+                let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
+                let job_id = offer.job_id;
+                let status_for_event = status.clone();
+                offer.status = status;
+                self.push_job_event(
+                    job_id,
+                    JobEventKind::OfferStatusUpdated {
+                        offer_id,
+                        status: status_for_event,
+                    },
+                );
+            }
+        }
         Ok(())
     }
 
@@ -271,60 +522,51 @@ impl Engine {
 
     pub fn expire_pending_offers_for_driver(&mut self, driver_id: Uuid) -> Vec<ExpiredOffer> {
         let now = Utc::now();
-        let mut expired = Vec::new();
+        let to_expire: Vec<Uuid> = self
+            .offers
+            .values()
+            .filter(|offer| {
+                offer.driver_id == driver_id
+                    && offer.status == OfferStatus::Pending
+                    && offer.expires_at <= now
+            })
+            .map(|offer| offer.offer_id)
+            .collect();
 
-        for offer in self.offers.values_mut() {
-            if offer.driver_id == driver_id
-                && offer.status == OfferStatus::Pending
-                && offer.expires_at <= now
-            {
-                offer.status = OfferStatus::Expired;
+        let mut expired = Vec::new();
+        for offer_id in to_expire {
+            if let Some(offer) = self.offers.get(&offer_id) {
                 expired.push(ExpiredOffer {
                     offer_id: offer.offer_id,
                     driver_id: offer.driver_id,
                     job_id: offer.job_id,
                 });
             }
+            self.append_and_apply(Command::MarkOfferExpired { offer_id });
         }
-
-        for item in &expired {
-            self.push_job_event(
-                item.job_id,
-                JobEventKind::OfferExpired {
-                    offer_id: item.offer_id,
-                    driver_id: item.driver_id,
-                },
-            );
-        }
-
         expired
     }
 
     pub fn expire_pending_offers_global(&mut self) -> Vec<ExpiredOffer> {
         let now = Utc::now();
-        let mut expired = Vec::new();
+        let to_expire: Vec<Uuid> = self
+            .offers
+            .values()
+            .filter(|offer| offer.status == OfferStatus::Pending && offer.expires_at <= now)
+            .map(|offer| offer.offer_id)
+            .collect();
 
-        for offer in self.offers.values_mut() {
-            if offer.status == OfferStatus::Pending && offer.expires_at <= now {
-                offer.status = OfferStatus::Expired;
+        let mut expired = Vec::new();
+        for offer_id in to_expire {
+            if let Some(offer) = self.offers.get(&offer_id) {
                 expired.push(ExpiredOffer {
                     offer_id: offer.offer_id,
                     driver_id: offer.driver_id,
                     job_id: offer.job_id,
                 });
             }
+            self.append_and_apply(Command::MarkOfferExpired { offer_id });
         }
-
-        for item in &expired {
-            self.push_job_event(
-                item.job_id,
-                JobEventKind::OfferExpired {
-                    offer_id: item.offer_id,
-                    driver_id: item.driver_id,
-                },
-            );
-        }
-
         expired
     }
 
@@ -355,7 +597,7 @@ impl Engine {
             return None;
         }
 
-        let already_offered: std::collections::HashSet<Uuid> = self
+        let already_offered: HashSet<Uuid> = self
             .offers
             .values()
             .filter(|offer| offer.job_id == job_id)
@@ -433,7 +675,51 @@ impl Engine {
         JobDispatchState::Exhausted
     }
 
+    pub fn handle_offer_response(
+        &mut self,
+        offer_id: Uuid,
+        accepted: bool,
+    ) -> Result<Option<MatchResult>, CoreError> {
+        let offer = self.offers.get(&offer_id).ok_or(CoreError::OfferNotFound)?;
+        if offer.status != OfferStatus::Pending {
+            return Err(CoreError::OfferNotPending);
+        }
+        if offer.expires_at <= Utc::now() {
+            // Mark expired via WAL
+            self.append_and_apply(Command::MarkOfferExpired { offer_id });
+            return Err(CoreError::OfferExpired);
+        }
+
+        let job_id = offer.job_id;
+        let driver_id = offer.driver_id;
+        let now = Utc::now();
+
+        if accepted {
+            self.append_and_apply(Command::AcceptOffer {
+                offer_id,
+                responded_at: now,
+            });
+            Ok(Some(MatchResult {
+                job_id,
+                driver_id,
+                offer_id,
+                matched_at: now,
+            }))
+        } else {
+            self.append_and_apply(Command::RejectOffer {
+                offer_id,
+                responded_at: now,
+            });
+            Ok(None)
+        }
+    }
+
+    // ─── Event query methods ─────────────────────────────────────────
+
     pub fn job_events(&self, job_id: Uuid, limit: usize) -> Vec<JobEventRecord> {
+        if self.storage.is_persistent() {
+            return self.query_persistent_events(job_id, limit, None, None);
+        }
         self.job_events_before(job_id, limit, None)
     }
 
@@ -441,7 +727,7 @@ impl Engine {
         &self,
         job_id: Uuid,
         limit: usize,
-        before: Option<chrono::DateTime<Utc>>,
+        before: Option<DateTime<Utc>>,
     ) -> Vec<JobEventRecord> {
         self.job_events_before_filtered(job_id, limit, before, None)
     }
@@ -450,14 +736,13 @@ impl Engine {
         &self,
         job_id: Uuid,
         limit: usize,
-        before: Option<chrono::DateTime<Utc>>,
+        before: Option<DateTime<Utc>>,
         kinds: Option<&[JobEventFilterKind]>,
     ) -> Vec<JobEventRecord> {
         let cursor = before.map(|occurred_at| JobEventsCursor {
             occurred_at,
             sequence: 0,
         });
-
         self.job_events_cursor_filtered(job_id, limit, cursor, kinds)
     }
 
@@ -468,6 +753,15 @@ impl Engine {
         cursor: Option<JobEventsCursor>,
         kinds: Option<&[JobEventFilterKind]>,
     ) -> Vec<JobEventRecord> {
+        if self.storage.is_persistent() {
+            let storage_cursor = cursor.map(|c| EventCursor {
+                occurred_at: c.occurred_at,
+                sequence: c.sequence,
+            });
+            return self.query_persistent_events(job_id, limit, storage_cursor, kinds);
+        }
+
+        // In-memory path (unchanged behavior)
         let max_items = if limit == 0 { 50 } else { limit };
         self.job_events
             .get(&job_id)
@@ -499,91 +793,120 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    pub fn handle_offer_response(
-        &mut self,
-        offer_id: Uuid,
-        accepted: bool,
-    ) -> Result<Option<MatchResult>, CoreError> {
-        let mut deferred_events: Vec<(Uuid, JobEventKind)> = Vec::new();
+    fn query_persistent_events(
+        &self,
+        job_id: Uuid,
+        limit: usize,
+        cursor: Option<EventCursor>,
+        kinds: Option<&[JobEventFilterKind]>,
+    ) -> Vec<JobEventRecord> {
+        let kind_filter: Option<Vec<String>> = kinds.map(|ks| {
+            ks.iter()
+                .map(|k| serde_json::to_string(k).unwrap_or_default())
+                .collect()
+        });
+        let filter_refs: Option<Vec<String>> = kind_filter;
 
-        let (job_id, driver_id, selected_offer_id) = {
-            let offer = self.offers.get_mut(&offer_id).ok_or(CoreError::OfferNotFound)?;
-            if offer.status != OfferStatus::Pending {
-                return Err(CoreError::OfferNotPending);
-            }
-            if offer.expires_at <= Utc::now() {
-                offer.status = OfferStatus::Expired;
-                return Err(CoreError::OfferExpired);
-            }
+        match self.storage.query_job_events(
+            job_id,
+            limit,
+            cursor,
+            filter_refs.as_deref().map(|v| {
+                // Convert &[String] to &[String] — already correct type
+                v
+            }),
+        ) {
+            Ok(stored) => stored
+                .into_iter()
+                .filter_map(|se| {
+                    let kind: JobEventKind = serde_json::from_str(&se.kind_json).ok()?;
+                    Some(JobEventRecord {
+                        sequence: se.sequence,
+                        occurred_at: se.occurred_at,
+                        kind,
+                    })
+                })
+                .collect(),
+            Err(_) => vec![],
+        }
+    }
+}
 
-            if accepted {
-                offer.status = OfferStatus::Accepted;
-            } else {
-                offer.status = OfferStatus::Rejected;
-                deferred_events.push((
-                    offer.job_id,
-                    JobEventKind::OfferRejected {
-                        offer_id: offer.offer_id,
-                        driver_id: offer.driver_id,
-                    },
-                ));
+// ─── Private helpers ─────────────────────────────────────────────────
 
-                for (event_job_id, event_kind) in deferred_events {
-                    self.push_job_event(event_job_id, event_kind);
-                }
-                return Ok(None);
-            }
-
-            (offer.job_id, offer.driver_id, offer.offer_id)
+impl Engine {
+    fn push_job_event(&mut self, job_id: Uuid, kind: JobEventKind) {
+        let next_sequence = {
+            let current = self.job_event_sequences.entry(job_id).or_insert(0);
+            *current += 1;
+            *current
         };
 
-        // Ensure there is only one winner for a job by cancelling competing pending offers.
-        for other_offer in self.offers.values_mut() {
-            if other_offer.job_id == job_id
-                && other_offer.offer_id != selected_offer_id
-                && other_offer.status == OfferStatus::Pending
-            {
-                other_offer.status = OfferStatus::Cancelled;
-                deferred_events.push((
-                    job_id,
-                    JobEventKind::OfferCancelled {
-                        offer_id: other_offer.offer_id,
-                        driver_id: other_offer.driver_id,
-                    },
-                ));
-            }
+        let now = Utc::now();
+
+        // Persist to storage
+        if self.storage.is_persistent() {
+            let kind_json = serde_json::to_string(&kind).unwrap_or_default();
+            let _ = self.storage.append_job_event(
+                job_id,
+                &StoredJobEvent {
+                    sequence: next_sequence,
+                    occurred_at: now,
+                    kind_json,
+                },
+            );
         }
 
-        if let Some(driver) = self.drivers.get_mut(&driver_id) {
-            driver.status = DriverStatus::Busy;
+        // Always maintain in-memory for reads (in-memory mode) and fast access
+        let entries = self.job_events.entry(job_id).or_default();
+        entries.push(JobEventRecord {
+            sequence: next_sequence,
+            occurred_at: now,
+            kind,
+        });
+
+        if entries.len() > MAX_JOB_EVENTS {
+            let overflow = entries.len() - MAX_JOB_EVENTS;
+            entries.drain(0..overflow);
         }
-
-        deferred_events.push((
-            job_id,
-            JobEventKind::OfferAccepted {
-                offer_id: selected_offer_id,
-                driver_id,
-            },
-        ));
-        deferred_events.push((
-            job_id,
-            JobEventKind::MatchConfirmed {
-                offer_id: selected_offer_id,
-                driver_id,
-            },
-        ));
-
-        for (event_job_id, event_kind) in deferred_events {
-            self.push_job_event(event_job_id, event_kind);
-        }
-
-        Ok(Some(MatchResult {
-            job_id,
-            driver_id,
-            offer_id: selected_offer_id,
-            matched_at: Utc::now(),
-        }))
     }
+}
+
+fn haversine_km(a: Coordinates, b: Coordinates) -> f64 {
+    let earth_radius_km = 6371.0_f64;
+
+    let a_lat = a.latitude.to_radians();
+    let a_lon = a.longitude.to_radians();
+    let b_lat = b.latitude.to_radians();
+    let b_lon = b.longitude.to_radians();
+
+    let d_lat = b_lat - a_lat;
+    let d_lon = b_lon - a_lon;
+
+    let s = (d_lat / 2.0).sin().powi(2)
+        + a_lat.cos() * b_lat.cos() * (d_lon / 2.0).sin().powi(2);
+
+    2.0 * earth_radius_km * s.sqrt().asin()
+}
+
+fn event_filter_kind(kind: &JobEventKind) -> JobEventFilterKind {
+    match kind {
+        JobEventKind::JobRegistered => JobEventFilterKind::JobRegistered,
+        JobEventKind::JobCancelled => JobEventFilterKind::JobCancelled,
+        JobEventKind::WebhookDeliveryFailed { .. } => JobEventFilterKind::WebhookDeliveryFailed,
+        JobEventKind::OfferCreated { .. } => JobEventFilterKind::OfferCreated,
+        JobEventKind::OfferExpired { .. } => JobEventFilterKind::OfferExpired,
+        JobEventKind::OfferCancelled { .. } => JobEventFilterKind::OfferCancelled,
+        JobEventKind::OfferRejected { .. } => JobEventFilterKind::OfferRejected,
+        JobEventKind::OfferAccepted { .. } => JobEventFilterKind::OfferAccepted,
+        JobEventKind::MatchConfirmed { .. } => JobEventFilterKind::MatchConfirmed,
+        JobEventKind::OfferStatusUpdated { .. } => JobEventFilterKind::OfferStatusUpdated,
+    }
+}
+
+fn expand_radius_km(current_radius_km: f64, max_radius_km: f64) -> f64 {
+    let next = current_radius_km + 2.0;
+    next.min(max_radius_km + 1.0)
 }
 
 #[cfg(test)]
@@ -964,63 +1287,4 @@ mod tests {
             JobEventKind::JobCancelled
         )));
     }
-}
-
-impl Engine {
-    fn push_job_event(&mut self, job_id: Uuid, kind: JobEventKind) {
-        let next_sequence = {
-            let current = self.job_event_sequences.entry(job_id).or_insert(0);
-            *current += 1;
-            *current
-        };
-
-        let entries = self.job_events.entry(job_id).or_default();
-        entries.push(JobEventRecord {
-            sequence: next_sequence,
-            occurred_at: Utc::now(),
-            kind,
-        });
-
-        if entries.len() > MAX_JOB_EVENTS {
-            let overflow = entries.len() - MAX_JOB_EVENTS;
-            entries.drain(0..overflow);
-        }
-    }
-}
-
-fn haversine_km(a: Coordinates, b: Coordinates) -> f64 {
-    let earth_radius_km = 6371.0_f64;
-
-    let a_lat = a.latitude.to_radians();
-    let a_lon = a.longitude.to_radians();
-    let b_lat = b.latitude.to_radians();
-    let b_lon = b.longitude.to_radians();
-
-    let d_lat = b_lat - a_lat;
-    let d_lon = b_lon - a_lon;
-
-    let s = (d_lat / 2.0).sin().powi(2)
-        + a_lat.cos() * b_lat.cos() * (d_lon / 2.0).sin().powi(2);
-
-    2.0 * earth_radius_km * s.sqrt().asin()
-}
-
-fn event_filter_kind(kind: &JobEventKind) -> JobEventFilterKind {
-    match kind {
-        JobEventKind::JobRegistered => JobEventFilterKind::JobRegistered,
-        JobEventKind::JobCancelled => JobEventFilterKind::JobCancelled,
-        JobEventKind::WebhookDeliveryFailed { .. } => JobEventFilterKind::WebhookDeliveryFailed,
-        JobEventKind::OfferCreated { .. } => JobEventFilterKind::OfferCreated,
-        JobEventKind::OfferExpired { .. } => JobEventFilterKind::OfferExpired,
-        JobEventKind::OfferCancelled { .. } => JobEventFilterKind::OfferCancelled,
-        JobEventKind::OfferRejected { .. } => JobEventFilterKind::OfferRejected,
-        JobEventKind::OfferAccepted { .. } => JobEventFilterKind::OfferAccepted,
-        JobEventKind::MatchConfirmed { .. } => JobEventFilterKind::MatchConfirmed,
-        JobEventKind::OfferStatusUpdated { .. } => JobEventFilterKind::OfferStatusUpdated,
-    }
-}
-
-fn expand_radius_km(current_radius_km: f64, max_radius_km: f64) -> f64 {
-    let next = current_radius_km + 2.0;
-    next.min(max_radius_km + 1.0)
 }

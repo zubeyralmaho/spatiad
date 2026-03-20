@@ -6,7 +6,11 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 spatiad-h3 = { path = "../spatiad-h3" }
+spatiad-storage = { path = "../spatiad-storage" }
 spatiad-types = { path = "../spatiad-types" }
 thiserror.workspace = true
+tracing.workspace = true
 uuid.workspace = true

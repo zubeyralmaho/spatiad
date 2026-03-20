@@ -4,6 +4,7 @@ use anyhow::Context;
 use spatiad_api::{router, start_background_tasks, ApiState, SlidingWindowRateLimiter, WsReconnectGuard};
 use spatiad_core::Engine;
 use spatiad_dispatch::DispatchService;
+use spatiad_storage::StorageBackend;
 use spatiad_types::{Coordinates, DriverStatus};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -21,7 +22,38 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(8);
 
-    let mut engine = Engine::new(h3_resolution);
+    let storage_backend = std::env::var("SPATIAD_STORAGE_BACKEND")
+        .unwrap_or_else(|_| "memory".to_string());
+
+    let engine = match storage_backend.as_str() {
+        "sqlite" => {
+            let path = std::env::var("SPATIAD_SQLITE_PATH")
+                .unwrap_or_else(|_| "spatiad.db".to_string());
+            info!(path = %path, "opening SQLite storage backend");
+            let backend = spatiad_storage::SqliteBackend::open(&path)
+                .context("failed to open SQLite database")?;
+            let storage: Box<dyn StorageBackend> = Box::new(backend);
+            Engine::recover(h3_resolution, storage)
+                .map_err(|e| anyhow::anyhow!("failed to recover engine state: {e}"))?
+        }
+        _ => {
+            if storage_backend != "memory" {
+                warn!(backend = %storage_backend, "unknown storage backend, falling back to in-memory");
+            }
+            let mut engine = Engine::new(h3_resolution);
+            // Seed one driver for immediate manual tests against /dispatch/offer.
+            engine.upsert_driver_location(
+                Uuid::parse_str("11111111-1111-1111-1111-111111111111")?,
+                "tow_truck".to_string(),
+                Coordinates {
+                    latitude: 38.433,
+                    longitude: 26.768,
+                },
+                DriverStatus::Available,
+            );
+            engine
+        }
+    };
 
     let dispatch_rate_limit_per_min = std::env::var("SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN")
         .ok()
@@ -37,16 +69,10 @@ async fn main() -> anyhow::Result<()> {
         .map(|value| value.clamp(100, 60_000))
         .unwrap_or(3_000);
 
-    // Seed one driver for immediate manual tests against /dispatch/offer.
-    engine.upsert_driver_location(
-        Uuid::parse_str("11111111-1111-1111-1111-111111111111")?,
-        "tow_truck".to_string(),
-        Coordinates {
-            latitude: 38.433,
-            longitude: 26.768,
-        },
-        DriverStatus::Available,
-    );
+    let snapshot_interval_secs = std::env::var("SPATIAD_SNAPSHOT_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(300);
 
     let state = ApiState {
         dispatch: Arc::new(Mutex::new(DispatchService::new(engine))),
@@ -68,6 +94,27 @@ async fn main() -> anyhow::Result<()> {
 
     start_background_tasks(state.clone());
 
+    // Start snapshot background task when using persistent storage.
+    if storage_backend == "sqlite" {
+        let dispatch = state.dispatch.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                tokio::time::Duration::from_secs(snapshot_interval_secs),
+            );
+            // Skip the immediate first tick.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let service = dispatch.lock().await;
+                if let Err(e) = service.engine.create_snapshot() {
+                    warn!(error = %e, "periodic snapshot failed");
+                } else {
+                    info!("periodic snapshot created");
+                }
+            }
+        });
+    }
+
     let app = router(state);
 
     let bind_addr = std::env::var("SPATIAD_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
@@ -75,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("invalid bind address")?;
 
-    info!(%addr, webhook_timeout_ms, "starting spatiad API");
+    info!(%addr, %storage_backend, webhook_timeout_ms, snapshot_interval_secs, "starting spatiad API");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)

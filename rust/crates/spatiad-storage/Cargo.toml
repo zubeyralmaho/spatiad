@@ -1,0 +1,19 @@
+[package]
+name = "spatiad-storage"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+spatiad-types = { path = "../spatiad-types" }
+chrono.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+bincode = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
+
+[features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite", "dep:bincode"]

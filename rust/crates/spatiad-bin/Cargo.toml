@@ -10,6 +10,7 @@ axum.workspace = true
 spatiad-api = { path = "../spatiad-api" }
 spatiad-core = { path = "../spatiad-core" }
 spatiad-dispatch = { path = "../spatiad-dispatch" }
+spatiad-storage = { path = "../spatiad-storage" }
 spatiad-types = { path = "../spatiad-types" }
 tokio.workspace = true
 tracing.workspace = true
