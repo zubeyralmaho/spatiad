@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  spatiad:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spatiad
+    ports:
+      - "3000:3000"
+    environment:
+      SPATIAD_LOG_LEVEL: info
+      SPATIAD_BIND_ADDR: 0.0.0.0:3000
+      SPATIAD_H3_RESOLUTION: 8
+      SPATIAD_DISPATCH_RATE_LIMIT_PER_MIN: 240
+      SPATIAD_WS_RECONNECT_MAX_PER_MIN: 30
+      # Optional: Configure webhook callbacks
+      # SPATIAD_WEBHOOK_URL: http://webhook-receiver:4000/webhooks/spatiad
+      # SPATIAD_WEBHOOK_SECRET: your-secret-key
+      # Optional: Enable authentication tokens
+      # SPATIAD_DISPATCHER_TOKEN: dispatcher-token
+      # SPATIAD_DRIVER_TOKEN: driver-token
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    command: spatiad-bin
+
+  # Optional: Webhook receiver service
+  # Uncomment to run the webhook verification example
+  # webhook-receiver:
+  #   build:
+  #     context: ./typescript/examples/ride-dispatch
+  #     dockerfile: ../../Dockerfile.example
+  #   container_name: webhook-receiver
+  #   ports:
+  #     - "4000:4000"
+  #   environment:
+  #     SPATIAD_WEBHOOK_SECRET: your-secret-key
+  #   depends_on:
+  #     - spatiad
+  #   restart: unless-stopped

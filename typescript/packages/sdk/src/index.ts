@@ -75,6 +75,7 @@ export type JobStatusResponse = {
 export type JobEventKind =
   | "job_registered"
   | "job_cancelled"
+  | "webhook_delivery_failed"
   | "offer_created"
   | "offer_expired"
   | "offer_cancelled"

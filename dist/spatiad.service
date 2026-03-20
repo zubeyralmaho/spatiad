@@ -1,0 +1,40 @@
+[Unit]
+Description=Spatiad Spatial Dispatch Engine
+Documentation=https://github.com/yourusername/spatiad
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spatiad
+Group=spatiad
+WorkingDirectory=/opt/spatiad
+
+# Environment variables
+EnvironmentFile=/etc/spatiad/spatiad.env
+
+# Start command
+ExecStart=/usr/local/bin/spatiad-bin
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Graceful shutdown
+TimeoutStopSec=30
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spatiad
+
+[Install]
+WantedBy=multi-user.target

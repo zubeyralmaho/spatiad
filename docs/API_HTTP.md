@@ -151,7 +151,7 @@ Query params:
 - `cursor` (optional): opaque pagination cursor in `<rfc3339>|<sequence>` format
 - `before` (optional): RFC3339 timestamp cursor (legacy compatibility mode)
 - `kinds` (optional): comma-separated event kind filter
-  - Supported values: `job_registered`, `job_cancelled`, `offer_created`, `offer_expired`, `offer_cancelled`, `offer_rejected`, `offer_accepted`, `match_confirmed`, `offer_status_updated`
+  - Supported values: `job_registered`, `job_cancelled`, `webhook_delivery_failed`, `offer_created`, `offer_expired`, `offer_cancelled`, `offer_rejected`, `offer_accepted`, `match_confirmed`, `offer_status_updated`
 
 Response:
 

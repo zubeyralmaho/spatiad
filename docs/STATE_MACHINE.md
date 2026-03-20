@@ -25,5 +25,4 @@
 5. If first acceptance arrives, job transitions to matched.
 6. Remaining pending offers for the same job are immediately marked `cancelled`.
 7. If timeout or rejection occurs for all candidates, next batch begins until max radius is reached.
-
-Detailed timer wheel and arbitration logic will be implemented in dispatch phase.
+8. If webhook delivery fails after retry attempts, `webhook_delivery_failed` is recorded in job events.

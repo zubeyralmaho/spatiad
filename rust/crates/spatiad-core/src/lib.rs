@@ -57,6 +57,7 @@ pub enum JobDispatchState {
 pub enum JobEventKind {
     JobRegistered,
     JobCancelled,
+    WebhookDeliveryFailed { offer_id: Uuid },
     OfferCreated { offer_id: Uuid, driver_id: Uuid },
     OfferExpired { offer_id: Uuid, driver_id: Uuid },
     OfferCancelled { offer_id: Uuid, driver_id: Uuid },
@@ -70,6 +71,7 @@ pub enum JobEventKind {
 pub enum JobEventFilterKind {
     JobRegistered,
     JobCancelled,
+    WebhookDeliveryFailed,
     OfferCreated,
     OfferExpired,
     OfferCancelled,
@@ -173,6 +175,14 @@ impl Engine {
         }
 
         true
+    }
+
+    pub fn record_webhook_delivery_failed(&mut self, job_id: Uuid, offer_id: Uuid) {
+        if !self.jobs.contains_key(&job_id) {
+            return;
+        }
+
+        self.push_job_event(job_id, JobEventKind::WebhookDeliveryFailed { offer_id });
     }
 
     pub fn create_offer(&mut self, job_id: Uuid, driver_id: Uuid, timeout_seconds: u64) -> OfferRecord {
@@ -999,6 +1009,7 @@ fn event_filter_kind(kind: &JobEventKind) -> JobEventFilterKind {
     match kind {
         JobEventKind::JobRegistered => JobEventFilterKind::JobRegistered,
         JobEventKind::JobCancelled => JobEventFilterKind::JobCancelled,
+        JobEventKind::WebhookDeliveryFailed { .. } => JobEventFilterKind::WebhookDeliveryFailed,
         JobEventKind::OfferCreated { .. } => JobEventFilterKind::OfferCreated,
         JobEventKind::OfferExpired { .. } => JobEventFilterKind::OfferExpired,
         JobEventKind::OfferCancelled { .. } => JobEventFilterKind::OfferCancelled,
