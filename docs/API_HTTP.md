@@ -9,6 +9,11 @@ Authentication notes:
   - `x-spatiad-dispatcher-token: <token>`
 - Dispatch endpoints are rate-limited per actor and may return `429 Too Many Requests`.
 
+Request tracing notes:
+
+- Every HTTP response includes `x-request-id`.
+- If client sends `x-request-id`, server echoes it back; otherwise server generates one.
+
 ## GET /health
 
 Response:

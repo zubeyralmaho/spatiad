@@ -18,5 +18,6 @@ spatiad-types = { path = "../spatiad-types" }
 spatiad-ws = { path = "../spatiad-ws" }
 spatiad-core = { path = "../spatiad-core" }
 tokio.workspace = true
+tracing.workspace = true
 tower = { version = "0.5", features = ["util"] }
 uuid.workspace = true

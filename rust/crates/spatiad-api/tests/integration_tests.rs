@@ -96,6 +96,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_health_response_includes_generated_request_id() {
+        let state = setup_test_state();
+        let app = router(state);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let header = response.headers().get("x-request-id").cloned();
+
+        assert!(header.is_some());
+        let header_value = header.unwrap();
+        let request_id = header_value
+            .to_str()
+            .expect("request id header should be valid utf8");
+        assert!(!request_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_health_preserves_incoming_request_id() {
+        let state = setup_test_state();
+        let app = router(state);
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header("x-request-id", "req-123")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("request id should be present")
+            .to_str()
+            .expect("request id header should be valid utf8");
+
+        assert_eq!(request_id, "req-123");
+    }
+
+    #[tokio::test]
     async fn test_driver_upsert() {
         let state = setup_test_state();
         let mut app = router(state);

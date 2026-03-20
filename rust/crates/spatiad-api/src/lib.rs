@@ -2,9 +2,11 @@ use std::{collections::{HashMap, VecDeque}, sync::Arc};
 
 use axum::{
     extract::ws::Message,
+    extract::Request,
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::{HeaderMap, HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -19,6 +21,7 @@ use spatiad_types::{Coordinates, DriverStatus, JobRequest, MatchResult, OfferSta
 use spatiad_ws::{DriverInbound, DriverOutbound};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, sleep, Duration};
+use tracing::info;
 use uuid::Uuid;
 
 mod validation;
@@ -205,7 +208,48 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/dispatch/job/:job_id", get(dispatch_job_status))
         .route("/api/v1/dispatch/job/:job_id/events", get(dispatch_job_events))
         .route("/api/v1/stream/driver/:driver_id", get(driver_ws))
+        .layer(middleware::from_fn(request_context_middleware))
         .with_state(state)
+}
+
+async fn request_context_middleware(mut request: Request, next: Next) -> Response {
+    let started = std::time::Instant::now();
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    if let Ok(header) = HeaderValue::from_str(&request_id) {
+        request
+            .headers_mut()
+            .insert("x-request-id", header);
+    }
+
+    let mut response = next.run(request).await;
+    let status = response.status();
+    let elapsed_ms = started.elapsed().as_millis();
+
+    if let Ok(header) = HeaderValue::from_str(&request_id) {
+        response
+            .headers_mut()
+            .insert("x-request-id", header);
+    }
+
+    info!(
+        request_id = %request_id,
+        method = %method,
+        path = %path,
+        status = status.as_u16(),
+        duration_ms = elapsed_ms,
+        "http request",
+    );
+
+    response
 }
 
 async fn health() -> Json<HealthResponse> {
