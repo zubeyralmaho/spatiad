@@ -82,6 +82,14 @@ See full matrix in docs/CONFIG.md.
 
 Detailed deployment steps are in docs/DEPLOYMENT.md.
 
+## Distribution without clone
+
+- TypeScript SDK from npm: `npm i @spatiad/sdk` or `pnpm add @spatiad/sdk`
+- Container runtime from published image (Docker/OCI registry)
+- Binary install via one command installer script: `dist/install-spatiad.sh`
+
+Release and publishing flow is documented in docs/PUBLISHING.md.
+
 ## Documentation
 
 Primary references:
@@ -92,6 +100,7 @@ Primary references:
 - docs/SECURITY.md
 - docs/CONFIG.md
 - docs/DEPLOYMENT.md
+- docs/PUBLISHING.md
 - docs/OPERATIONS_RUNBOOK.md
 - docs/TROUBLESHOOTING.md
 - ARCHITECTURE.md

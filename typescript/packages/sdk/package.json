@@ -1,12 +1,32 @@
 {
   "name": "@spatiad/sdk",
   "version": "0.1.0",
+  "description": "TypeScript SDK for Spatiad dispatch APIs",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zubeyralmaho/spatiad.git",
+    "directory": "typescript/packages/sdk"
+  },
+  "keywords": [
+    "dispatch",
+    "fleet",
+    "spatiad",
+    "sdk"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "node --test",
-    "lint": "echo 'no lint configured yet'"
+    "lint": "echo 'no lint configured yet'",
+    "prepublishOnly": "pnpm run build && pnpm run test"
   }
 }
