@@ -3,7 +3,7 @@ version: '3.8'
 services:
   spatiad:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     container_name: spatiad
     ports:
@@ -33,7 +33,7 @@ services:
   # Uncomment to run the webhook verification example
   # webhook-receiver:
   #   build:
-  #     context: ./typescript/examples/ride-dispatch
+  #     context: ../typescript/examples/ride-dispatch
   #     dockerfile: ../../Dockerfile.example
   #   container_name: webhook-receiver
   #   ports:

@@ -25,8 +25,11 @@ typescript/                    TypeScript monorepo (pnpm 9, Node 20+)
   examples/
     ride-dispatch/             Example webhook receiver
 docs/                          Project documentation
-k8s/                           Kubernetes manifests
-dist/                          Distribution assets (installer, systemd unit, env template)
+deploy/                        Deployment configurations
+  docker-compose.yml           Compose stack for local development
+  kubernetes/                  Kubernetes manifests
+  systemd/                     systemd unit and env template
+scripts/                       Utility scripts (installer)
 ```
 
 ## Build & test commands

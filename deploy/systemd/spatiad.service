@@ -1,6 +1,6 @@
 [Unit]
 Description=Spatiad Spatial Dispatch Engine
-Documentation=https://github.com/yourusername/spatiad
+Documentation=https://github.com/zubeyralmaho/spatiad
 After=network-online.target
 Wants=network-online.target
 

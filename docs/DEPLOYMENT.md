@@ -120,14 +120,14 @@ services:
 ### Run with Docker Compose
 
 ```bash
-# Start services
-docker-compose up -d
+# Start services (from repo root)
+docker compose -f deploy/docker-compose.yml up -d
 
 # View logs
-docker-compose logs -f spatiad
+docker compose -f deploy/docker-compose.yml logs -f spatiad
 
 # Stop services
-docker-compose down
+docker compose -f deploy/docker-compose.yml down
 ```
 
 ### Manual Docker Run
@@ -296,10 +296,7 @@ spec:
 
 ```bash
 # Create namespace and secrets
-kubectl apply -f k8s/namespace.yaml
-
-# Deploy application
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f deploy/kubernetes/deployment.yaml
 
 # Check status
 kubectl get pods -n spatiad
@@ -331,7 +328,7 @@ Create `/etc/systemd/system/spatiad.service`:
 ```ini
 [Unit]
 Description=Spatiad Spatial Dispatch Engine
-Documentation=https://github.com/yourusername/spatiad
+Documentation=https://github.com/zubeyralmaho/spatiad
 After=network-online.target
 Wants=network-online.target
 

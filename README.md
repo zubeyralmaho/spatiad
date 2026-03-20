@@ -197,17 +197,18 @@ docker build -t spatiad .
 docker run -p 3000:3000 spatiad
 
 # Docker Compose (local development)
-docker compose up
+docker compose -f deploy/docker-compose.yml up
 
 # Kubernetes
-kubectl apply -f k8s/deployment.yaml
+kubectl apply -f deploy/kubernetes/deployment.yaml
 
 # systemd (bare metal)
-sudo cp dist/spatiad.service /etc/systemd/system/
+sudo cp deploy/systemd/spatiad.service /etc/systemd/system/
+sudo cp deploy/systemd/spatiad.env.example /etc/spatiad/spatiad.env
 sudo systemctl enable --now spatiad
 
 # One-command install (downloads pre-built binary)
-curl -sSL https://raw.githubusercontent.com/zubeyralmaho/spatiad/main/dist/install-spatiad.sh | bash
+curl -sSL https://raw.githubusercontent.com/zubeyralmaho/spatiad/main/scripts/install.sh | bash
 ```
 
 Detailed guide: [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)

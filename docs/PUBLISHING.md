@@ -71,13 +71,13 @@ Each archive should contain:
 Users can install via:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/spatiad/main/dist/install-spatiad.sh | sh -s -- v0.1.0
+curl -fsSL https://raw.githubusercontent.com/<owner>/spatiad/main/scripts/install.sh | sh -s -- v0.1.0
 ```
 
 Or with explicit install dir:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/spatiad/main/dist/install-spatiad.sh | sh -s -- v0.1.0 /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/<owner>/spatiad/main/scripts/install.sh | sh -s -- v0.1.0 /usr/local/bin
 ```
 
 ## npm vs pnpm
