@@ -178,6 +178,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -297,6 +298,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -360,6 +362,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -438,6 +441,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -496,6 +500,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -548,6 +553,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -602,6 +608,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
             dispatch.engine.upsert_driver_location(
                 Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
@@ -611,6 +618,7 @@ mod tests {
                     longitude: 26.769,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -675,6 +683,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 

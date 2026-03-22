@@ -407,6 +407,7 @@ mod tests {
                 position: Coordinates { latitude: 38.0, longitude: 26.0 },
                 status: DriverStatus::Available,
                 timestamp: Utc::now(),
+                rating: 5.0,
             },
             Command::RegisterJob {
                 job: JobRequest {

@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
             engine
         }

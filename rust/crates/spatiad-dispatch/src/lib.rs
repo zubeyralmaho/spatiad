@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 use spatiad_core::Engine;
 use spatiad_core::CancelledDriverOffer;
@@ -8,9 +9,18 @@ use spatiad_core::JobEventsCursor;
 use spatiad_core::JobEventFilterKind;
 use spatiad_core::JobEventRecord;
 use spatiad_core::PendingDriverOffer;
-use spatiad_types::{JobRequest, MatchResult, OfferRecord};
+use spatiad_types::{Coordinates, JobRequest, MatchResult, OfferRecord};
+use spatiad_zones::{Point, ZoneCheckResult, ZoneRegistry};
 use thiserror::Error;
 use uuid::Uuid;
+
+pub mod eta;
+pub mod scoring;
+pub use eta::{EtaProvider, OsrmEtaProvider, StraightLineEtaProvider};
+pub use scoring::{ScoringConfig, ScoringWeights};
+
+// Re-export zone types so callers don't need a direct spatiad-zones dependency.
+pub use spatiad_zones::{DenialReason as ZoneDenialReason, Zone, ZoneType};
 
 #[derive(Debug, Error)]
 pub enum DispatchError {
@@ -18,11 +28,19 @@ pub enum DispatchError {
     NoAvailableDriver,
     #[error("invalid offer response")]
     InvalidOfferResponse,
+    #[error("pickup denied by zone policy: {reason}")]
+    ZoneDenied { reason: String },
 }
 
 #[derive(Debug)]
 pub struct DispatchService {
     pub engine: Engine,
+    pub scoring: ScoringConfig,
+    /// Zone registry shared with the API layer (behind a read-write lock so
+    /// zone updates don't block dispatch operations).
+    pub zones: Arc<RwLock<ZoneRegistry>>,
+    /// ETA provider used for travel-time estimates during scoring.
+    pub eta_provider: Box<dyn EtaProvider>,
 }
 
 #[derive(Debug, Default)]
@@ -39,21 +57,60 @@ pub struct ExpirationUpdate {
 
 impl DispatchService {
     pub fn new(engine: Engine) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            scoring: ScoringConfig::default(),
+            zones: Arc::new(RwLock::new(ZoneRegistry::new())),
+            eta_provider: Box::new(StraightLineEtaProvider::default()),
+        }
+    }
+
+    pub fn with_scoring(engine: Engine, scoring: ScoringConfig) -> Self {
+        Self {
+            engine,
+            scoring,
+            zones: Arc::new(RwLock::new(ZoneRegistry::new())),
+            eta_provider: Box::new(StraightLineEtaProvider::default()),
+        }
+    }
+
+    /// Replace the ETA provider (e.g. to use OSRM in production).
+    pub fn set_eta_provider(&mut self, provider: Box<dyn EtaProvider>) {
+        self.eta_provider = provider;
     }
 
     pub fn submit_job(&mut self, job: JobRequest) -> Result<OfferRecord, DispatchError> {
+        // Zone check before registering the job.
+        {
+            let registry = self.zones.read().expect("zone lock poisoned");
+            let pickup = Point {
+                latitude: job.pickup.latitude,
+                longitude: job.pickup.longitude,
+            };
+            match registry.check(pickup) {
+                ZoneCheckResult::Denied { reason } => {
+                    return Err(DispatchError::ZoneDenied {
+                        reason: format!("{reason:?}"),
+                    });
+                }
+                ZoneCheckResult::Allowed | ZoneCheckResult::Surge { .. } => {}
+            }
+        }
+
         self.engine.register_job(job.clone());
 
         let mut radius_km = job.initial_radius_km.max(0.1);
         let max_radius_km = job.max_radius_km.max(radius_km);
 
         while radius_km <= max_radius_km + f64::EPSILON {
+            // Fetch up to 10 candidates and apply multi-factor scoring
             let candidates = self
                 .engine
-                .nearest_candidates_in_radius(job.pickup, &job.category, radius_km, 3);
+                .nearest_candidates_with_distance(job.pickup, &job.category, radius_km, 10);
 
-            if let Some(driver_id) = candidates.into_iter().next() {
+            if let Some(driver_id) =
+                self.best_candidate(candidates, job.pickup, radius_km)
+            {
                 return Ok(self
                     .engine
                     .create_offer(job.job_id, driver_id, job.timeout_seconds));
@@ -66,6 +123,59 @@ impl DispatchService {
         }
 
         Err(DispatchError::NoAvailableDriver)
+    }
+
+    /// Score a set of candidate `(driver_id, distance_km)` pairs and return the
+    /// best driver, or `None` if the list is empty.
+    ///
+    /// ETA is estimated for each candidate using the configured `eta_provider`
+    /// and incorporated into the distance component so that road-network travel
+    /// time can replace straight-line distance when an OSRM provider is active.
+    fn best_candidate(
+        &self,
+        candidates: Vec<(Uuid, f64)>,
+        pickup: Coordinates,
+        radius_km: f64,
+    ) -> Option<Uuid> {
+        // Estimate max possible ETA within this radius for normalisation (using
+        // straight-line at the edge — avoids a second ETA call per candidate).
+        let max_eta_secs = (radius_km / self.scoring.weights.distance.max(0.1) as f64)
+            .max(1.0)
+            * 120.0; // generous upper bound
+
+        candidates
+            .into_iter()
+            .filter_map(|(driver_id, distance_km)| {
+                let snapshot = self.engine.driver_snapshot(driver_id)?;
+                let workload = self.engine.pending_offer_count_for_driver(driver_id) as f32;
+
+                // Use ETA-based proximity when an ETA provider is available.
+                let eta_secs = self.eta_provider.estimate_secs(
+                    eta::LatLon {
+                        latitude: snapshot.position.latitude,
+                        longitude: snapshot.position.longitude,
+                    },
+                    eta::LatLon {
+                        latitude: pickup.latitude,
+                        longitude: pickup.longitude,
+                    },
+                );
+                // Normalise ETA to [0,1] then invert so closer (faster) = higher score.
+                let eta_km_equiv = (eta_secs / 3600.0) * 30.0; // convert at 30 km/h for normalisation
+                let effective_distance_km = eta_km_equiv.min(distance_km * 2.0);
+                let normalise_radius = radius_km.max(max_eta_secs / 3600.0 * 30.0);
+
+                let score = scoring::score_candidate(
+                    effective_distance_km,
+                    normalise_radius,
+                    snapshot.rating,
+                    workload,
+                    &self.scoring.weights,
+                );
+                Some((driver_id, score))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id)
     }
 
     pub fn cancel_offer(&mut self, offer_id: Uuid) {
@@ -216,6 +326,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         let mut dispatch = DispatchService::new(engine);
@@ -251,6 +362,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
         engine.upsert_driver_location(
             driver_b,
@@ -260,6 +372,7 @@ mod tests {
                 longitude: 26.769,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         let mut dispatch = DispatchService::new(engine);
@@ -301,6 +414,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
         engine.upsert_driver_location(
             driver_b,
@@ -310,6 +424,7 @@ mod tests {
                 longitude: 26.769,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         let mut dispatch = DispatchService::new(engine);

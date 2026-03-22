@@ -234,6 +234,7 @@ impl Engine {
                 position,
                 status,
                 timestamp,
+                rating,
             } => {
                 let snapshot = DriverSnapshot {
                     driver_id: *driver_id,
@@ -241,6 +242,7 @@ impl Engine {
                     status: status.clone(),
                     position: *position,
                     last_seen_at: *timestamp,
+                    rating: *rating,
                 };
                 self.spatial.upsert_driver(*driver_id, *position);
                 self.drivers.insert(*driver_id, snapshot);
@@ -415,15 +417,62 @@ impl Engine {
         category: String,
         position: Coordinates,
         status: DriverStatus,
+        rating: f32,
     ) {
         let now = Utc::now();
+        let rating = rating.clamp(1.0, 5.0);
         self.append_and_apply(Command::UpsertDriverLocation {
             driver_id,
             category,
             position,
             status,
             timestamp: now,
+            rating,
         });
+    }
+
+    /// Return a driver snapshot by ID, or `None` if the driver is unknown.
+    pub fn driver_snapshot(&self, driver_id: Uuid) -> Option<&DriverSnapshot> {
+        self.drivers.get(&driver_id)
+    }
+
+    /// Count how many pending (not-yet-responded) offers a driver currently has.
+    pub fn pending_offer_count_for_driver(&self, driver_id: Uuid) -> usize {
+        self.offers
+            .values()
+            .filter(|o| o.driver_id == driver_id && o.status == OfferStatus::Pending)
+            .count()
+    }
+
+    /// Like `nearest_candidates_in_radius`, but returns `(driver_id, distance_km)` pairs
+    /// so callers can use distance in multi-factor scoring without recomputing it.
+    pub fn nearest_candidates_with_distance(
+        &self,
+        pickup: Coordinates,
+        category: &str,
+        radius_km: f64,
+        limit: usize,
+    ) -> Vec<(Uuid, f64)> {
+        let mut candidates: Vec<(Uuid, f64)> = self
+            .drivers
+            .iter()
+            .filter_map(|(driver_id, driver)| {
+                if driver.status != DriverStatus::Available
+                    || !driver.category.eq_ignore_ascii_case(category)
+                {
+                    return None;
+                }
+                let distance_km = haversine_km(pickup, driver.position);
+                if distance_km <= radius_km {
+                    Some((*driver_id, distance_km))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.truncate(limit);
+        candidates
     }
 
     pub fn register_job(&mut self, job: JobRequest) {
@@ -983,6 +1032,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {
@@ -1027,6 +1077,7 @@ mod tests {
                     longitude: 26.768,
                 },
                 DriverStatus::Available,
+                5.0,
             );
         }
 
@@ -1084,6 +1135,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {
@@ -1128,6 +1180,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {
@@ -1175,6 +1228,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {
@@ -1220,6 +1274,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {
@@ -1266,6 +1321,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {
@@ -1310,6 +1366,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {

@@ -15,6 +15,10 @@ pub enum DriverStatus {
     Busy,
 }
 
+fn default_driver_rating() -> f32 {
+    5.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverSnapshot {
     pub driver_id: Uuid,
@@ -22,6 +26,9 @@ pub struct DriverSnapshot {
     pub status: DriverStatus,
     pub position: Coordinates,
     pub last_seen_at: DateTime<Utc>,
+    /// Driver rating on a 1.0–5.0 scale. Defaults to 5.0 when not provided.
+    #[serde(default = "default_driver_rating")]
+    pub rating: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

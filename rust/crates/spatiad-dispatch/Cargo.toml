@@ -6,7 +6,10 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json.workspace = true
 spatiad-core = { path = "../spatiad-core" }
 spatiad-types = { path = "../spatiad-types" }
+spatiad-zones = { path = "../spatiad-zones" }
 thiserror.workspace = true
 uuid.workspace = true

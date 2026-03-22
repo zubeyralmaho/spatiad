@@ -225,12 +225,19 @@ pub struct JobEventResponse {
     pub status: Option<&'static str>,
 }
 
+fn default_driver_rating() -> f32 {
+    5.0
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DriverUpsertRequest {
     pub driver_id: Uuid,
     pub category: String,
     pub status: DriverStatus,
     pub position: Coordinates,
+    /// Driver rating on a 1.0–5.0 scale. Defaults to 5.0 if not supplied.
+    #[serde(default = "default_driver_rating")]
+    pub rating: f32,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -471,6 +478,7 @@ async fn upsert_driver(
         payload.category,
         payload.position,
         payload.status,
+        payload.rating,
     );
 
     StatusCode::OK.into_response()
@@ -965,11 +973,18 @@ async fn handle_driver_message(
                     timestamp: _,
                 } => {
                     let mut dispatch = state.dispatch.lock().await;
+                    // Preserve the driver's existing rating across location updates.
+                    let rating = dispatch
+                        .engine
+                        .driver_snapshot(driver_id)
+                        .map(|s| s.rating)
+                        .unwrap_or(5.0);
                     dispatch.engine.upsert_driver_location(
                         driver_id,
                         category,
                         Coordinates { latitude, longitude },
                         status,
+                        rating,
                     );
                     Ok(())
                 }
@@ -1703,6 +1718,7 @@ mod tests {
                 longitude: 26.768,
             },
             DriverStatus::Available,
+            5.0,
         );
 
         engine.register_job(JobRequest {

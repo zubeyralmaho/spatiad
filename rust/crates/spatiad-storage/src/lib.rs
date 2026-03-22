@@ -32,6 +32,10 @@ pub enum StorageError {
     EventStore(String),
 }
 
+fn default_rating() -> f32 {
+    5.0
+}
+
 /// A command that mutates engine state. Each variant captures all arguments
 /// needed to replay the mutation deterministically — no `Utc::now()` or
 /// `Uuid::new_v4()` during replay.
@@ -43,6 +47,9 @@ pub enum Command {
         position: Coordinates,
         status: DriverStatus,
         timestamp: DateTime<Utc>,
+        /// Driver rating (1.0–5.0). Defaults to 5.0 for WAL backwards compat.
+        #[serde(default = "default_rating")]
+        rating: f32,
     },
     RegisterJob {
         job: JobRequest,

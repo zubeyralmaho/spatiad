@@ -5,6 +5,7 @@ members = [
   "crates/spatiad-storage",
   "crates/spatiad-core",
   "crates/spatiad-dispatch",
+  "crates/spatiad-zones",
   "crates/spatiad-ws",
   "crates/spatiad-api",
   "crates/spatiad-bin",
